@@ -1,0 +1,1010 @@
+/* ai.c - computer opponents ("land attack" style skirmish AI).
+ *
+ * Behaviour modelled on the original's default skirmish AI as documented by Wargus
+ * scripts/ai/land_attack.lua and docs/SPEC_RULES.md section 14 (read as documentation only):
+ *  - economy: keep workers busy (about 2/3 on gold), farms ahead of the food cap, workers up to a
+ *    target that grows with the build order, barracks -> lumber mill -> blacksmith -> 2nd barracks ->
+ *    keep -> stables/ogre mound -> castle, weapon/armour/missile research when affordable;
+ *  - military: a melee/ranged/cavalry/siege mix gathered at a rally point near home, attack waves of
+ *    growing size (attack-move to the nearest known enemy building, else an enemy start location),
+ *    home defence (idle home army attacks enemies near home or whoever hurts our units there).
+ *
+ * Only the cmd_* command API and read-only world state are used. Each computer player thinks once
+ * every AI_THINK_PERIOD cycles (players staggered); one think scans the unit array exactly once.
+ * No allocation, no floats, randomness only through w2_rand().
+ */
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "w2.h"
+#include "w2cfg.h"
+#include "ai.h"
+
+/* m68k-amigaos-gcc 6.5 -O1 crashes (ivopts ICE) when these per-unit helpers are inlined into scan() */
+#define W2_AI_NOINLINE __attribute__((noinline))
+
+#define AI_MAX_P     8
+#define AI_MAX_PEND  3
+#define AI_MAX_WORK  160
+#define AI_MAX_ARMY  256
+#define AI_MAX_ENEMY 128
+#define AI_MAX_MINE  24
+#define AI_MAX_HURT  8
+#define AI_MAX_PROD  8
+#define AI_SITE_R    18      /* build-site search radius (tiles) */
+#define AI_HOME_R    12      /* enemies this close to home are a threat */
+#define AI_ENEMY_R   24      /* enemies further than this from home are not tracked */
+#define AI_ARMY_CAP  40
+#define AI_PEND_TTL  3000    /* cycles a build order may take until the building appears */
+
+enum { J_IDLE, J_GOLD, J_WOOD, J_BUSY };
+enum { ROLE_HOME, ROLE_ATTACK };
+enum { S_WORKERS, S_BUILD, S_HALL, S_RESEARCH };
+enum { B_BARRACKS, B_MILL, B_SMITH, B_STABLES };
+enum { U_W1, U_W2, U_A1, U_A2, U_R1, U_R2, U_S1, U_S2 };
+
+/* ---- per race facts ------------------------------------------------------------------------- */
+typedef struct AiRace {
+	uint8_t hall[4];          /* [1] town hall, [2] keep, [3] castle */
+	uint8_t farm, worker;
+	uint8_t bld[4];           /* B_* */
+	uint8_t melee, ranged, cavalry, siege;
+	uint8_t upg[8];           /* U_* */
+} AiRace;
+
+static const AiRace ai_races[2] = {
+	{ { 0, W2U_TOWN_HALL, W2U_KEEP, W2U_CASTLE }, W2U_FARM, W2U_PEASANT,
+	  { W2U_HUMAN_BARRACKS, W2U_ELVEN_LUMBER_MILL, W2U_HUMAN_BLACKSMITH, W2U_STABLES },
+	  W2U_FOOTMAN, W2U_ARCHER, W2U_KNIGHT, W2U_BALLISTA,
+	  { W2UP_SWORD1, W2UP_SWORD2, W2UP_HUMAN_SHIELD1, W2UP_HUMAN_SHIELD2, W2UP_ARROW1, W2UP_ARROW2,
+	    W2UP_BALLISTA1, W2UP_BALLISTA2 } },
+	{ { 0, W2U_GREAT_HALL, W2U_STRONGHOLD, W2U_FORTRESS }, W2U_PIG_FARM, W2U_PEON,
+	  { W2U_ORC_BARRACKS, W2U_TROLL_LUMBER_MILL, W2U_ORC_BLACKSMITH, W2U_OGRE_MOUND },
+	  W2U_GRUNT, W2U_AXETHROWER, W2U_OGRE, W2U_CATAPULT,
+	  { W2UP_BATTLE_AXE1, W2UP_BATTLE_AXE2, W2UP_ORC_SHIELD1, W2UP_ORC_SHIELD2, W2UP_THROWING_AXE1,
+	    W2UP_THROWING_AXE2, W2UP_CATAPULT1, W2UP_CATAPULT2 } },
+};
+
+/* ---- build order (land attack). Steps are re-evaluated from the top on every think, so a lost
+ * building is rebuilt. S_BUILD / S_HALL block the steps below them while unfinished (and reserve
+ * their cost); S_WORKERS sets the worker target; S_RESEARCH is tried when affordable. ---------- */
+typedef struct AiStep { uint8_t kind, what, n; } AiStep;
+static const AiStep ai_order[] = {
+	{ S_WORKERS, 0, 5 },
+	{ S_BUILD, B_BARRACKS, 1 },
+	{ S_WORKERS, 0, 8 },
+	{ S_BUILD, B_MILL, 1 },
+	{ S_WORKERS, 0, 10 },
+	{ S_BUILD, B_SMITH, 1 },
+	{ S_RESEARCH, U_W1, 0 },
+	{ S_RESEARCH, U_A1, 0 },
+	{ S_RESEARCH, U_R1, 0 },
+	{ S_WORKERS, 0, 13 },
+	{ S_BUILD, B_BARRACKS, 2 },
+	{ S_HALL, 0, 2 },
+	{ S_WORKERS, 0, 16 },
+	{ S_BUILD, B_STABLES, 1 },
+	{ S_RESEARCH, U_W2, 0 },
+	{ S_RESEARCH, U_A2, 0 },
+	{ S_RESEARCH, U_R2, 0 },
+	{ S_WORKERS, 0, 20 },
+	{ S_HALL, 0, 3 },
+	{ S_RESEARCH, U_S1, 0 },
+	{ S_RESEARCH, U_S2, 0 },
+	{ S_BUILD, B_BARRACKS, 3 },
+	{ S_WORKERS, 0, 25 },
+};
+#define AI_NSTEPS ((int)(sizeof ai_order / sizeof ai_order[0]))
+
+static const uint8_t ai_waves[] = { 3, 5, 8, 12, 16, 20, 24 };
+
+/* ---- persistent state ---------------------------------------------------------------------- */
+typedef struct AiPend { int16_t builder; uint8_t type, tx, ty; uint32_t t; } AiPend;
+typedef struct AiState {
+	uint8_t active;
+	uint8_t race;
+	uint8_t wave, wave_extra;
+	uint8_t visited;            /* bit q: enemy q's start location was visited and found empty */
+	uint8_t site_fail;
+	int16_t home_tx, home_ty;
+	int16_t att_tx, att_ty;     /* -1: no attack target */
+	int16_t tree_tx, tree_ty;   /* cached wood tile, -1 none */
+	AiPend  pend[AI_MAX_PEND];
+	AiInfo  info;
+} AiState;
+
+static AiState  ai_st[AI_MAX_P];
+static uint16_t ai_key[W2_MAX_UNITS];   /* 0x8000 | owner << 8 | type: detects slot reuse */
+static uint16_t ai_hp[W2_MAX_UNITS];    /* hp at the owner's last think */
+static uint8_t  ai_role[W2_MAX_UNITS];
+static uint8_t  ai_retry[W2_MAX_UNITS];
+static int      g_log;
+
+/* ---- per-think scan results (static: small stack) ------------------------------------------- */
+static uint16_t s_done[W2_NUM_UNIT_TYPES];   /* complete units / buildings of each type */
+static uint16_t s_cons[W2_NUM_UNIT_TYPES];   /* buildings under construction / hall upgrades in progress */
+static uint16_t s_train[W2_NUM_UNIT_TYPES];  /* units being trained */
+static int16_t  s_idle[W2_NUM_UNIT_TYPES];   /* an idle complete building of that type, -1 */
+static uint32_t s_research[2];              /* upgrades in progress (bit per id) */
+static uint16_t s_work[AI_MAX_WORK];  static uint8_t s_job[AI_MAX_WORK]; static int s_nwork;
+static uint16_t s_army[AI_MAX_ARMY];  static int s_narmy;
+static uint16_t s_enemy[AI_MAX_ENEMY]; static int s_nenemy;
+static uint16_t s_mine[AI_MAX_MINE];  static int s_nmine;
+static uint16_t s_hurt[AI_MAX_HURT];  static int s_nhurt;
+static uint16_t s_prod[AI_MAX_PROD];  static int s_nprod;
+static uint16_t s_alive[W2_MAX_PLAYERS];
+static uint16_t s_halls[8]; static int s_nhalls;
+static int s_p, s_hall, s_hall_tier, s_upgrading, s_main_mine;
+static int s_food_sup, s_food_used;
+static int s_ebld, s_ebld_d;           /* nearest explored enemy building to home */
+static int s_ngold, s_nwood;
+static int32_t b_gold, b_wood, b_oil;  /* budget left this think */
+static int32_t r_gold, r_wood, r_oil;  /* reserved for the blocking build-order item */
+
+/* ---- helpers --------------------------------------------------------------------------------- */
+static void ai_log(int p, const char *fmt, ...)
+{
+	char buf[160];
+	va_list ap;
+	if (!g_log) return;
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof buf, fmt, ap);
+	va_end(ap);
+	w2_log("ai p%d c%lu: %s", p, (unsigned long)w2.cycle, buf);
+}
+
+static const char *tname(int type)
+{
+	const w2_unit_type *t = w2_unit((unsigned)type);
+	return t ? t->ident : "?";
+}
+
+static int iabs(int v) { return v < 0 ? -v : v; }
+static int cheb(int ax, int ay, int bx, int by) { int dx = iabs(ax - bx), dy = iabs(ay - by); return dx > dy ? dx : dy; }
+
+/* centre tile of a unit's footprint */
+static void ucentre(int slot, int *x, int *y)
+{
+	const W2Unit *u = &w2.unit[slot];
+	const w2_unit_type *t = w2_unit(u->type);
+	int w = t ? t->tile_w : 1, h = t ? t->tile_h : 1;
+	*x = u->tx + w / 2; *y = u->ty + h / 2;
+}
+
+static int udist_tile(int slot, int x, int y) { int cx, cy; ucentre(slot, &cx, &cy); return cheb(cx, cy, x, y); }
+
+static int is_idle(const W2Unit *u) { return u->order == W2_ORD_NONE || u->order == W2_ORD_STILL; }
+
+static int hall_tier_of(int type)
+{
+	switch (type) {
+	case W2U_TOWN_HALL: case W2U_GREAT_HALL: return 1;
+	case W2U_KEEP: case W2U_STRONGHOLD: return 2;
+	case W2U_CASTLE: case W2U_FORTRESS: return 3;
+	}
+	return 0;
+}
+
+static int researched(int p, int upg) { return upg < 32 && ((w2.player[p].upgrades >> upg) & 1u); }
+static int researching(int upg) { return (s_research[upg >> 5] >> (upg & 31)) & 1u; }
+
+static int pend_count(int type)
+{
+	int i, n = 0;
+	for (i = 0; i < AI_MAX_PEND; i++)
+		if (ai_st[s_p].pend[i].builder >= 0 && (type < 0 || ai_st[s_p].pend[i].type == type)) n++;
+	return n;
+}
+static int total_of(int type) { return s_done[type] + s_cons[type] + s_train[type] + pend_count(type); }
+
+/* spend from this think's budget; 'urgent' ignores the reservation of the blocking item */
+static int can_spend(int g, int w, int o, int urgent)
+{
+	if (urgent) return b_gold >= g && b_wood >= w && b_oil >= o;
+	return b_gold - r_gold >= g && b_wood - r_wood >= w && b_oil - r_oil >= o;
+}
+static void spend(int g, int w, int o) { b_gold -= g; b_wood -= w; b_oil -= o; }
+static void reserve(int g, int w, int o) { if (!r_gold && !r_wood && !r_oil) { r_gold = g; r_wood = w; r_oil = o; } }
+
+/* AI-side tech requirements (complete buildings), plus the economy's own check */
+static int req_ok(int p, int type)
+{
+	const AiRace *r = &ai_races[ai_st[p].race];
+	int ok = 1;
+	if (type == r->ranged) ok = s_done[r->bld[B_MILL]] > 0;
+	else if (type == r->siege) ok = s_done[r->bld[B_MILL]] > 0 && s_done[r->bld[B_SMITH]] > 0;
+	else if (type == r->cavalry) ok = s_done[r->bld[B_STABLES]] > 0 && s_done[r->bld[B_SMITH]] > 0;
+	else if (type == r->bld[B_BARRACKS] || type == r->bld[B_MILL] || type == r->bld[B_SMITH]) ok = s_hall_tier >= 1;
+	else if (type == r->bld[B_STABLES]) ok = s_hall_tier >= 2;
+	else if (type == r->hall[2]) ok = s_hall_tier == 1 && s_done[r->bld[B_BARRACKS]] > 0;
+	else if (type == r->hall[3]) ok = s_hall_tier == 2 && s_done[r->bld[B_STABLES]] > 0 &&
+	                                  s_done[r->bld[B_SMITH]] > 0 && s_done[r->bld[B_MILL]] > 0;
+	return ok && econ_allowed_unit(p, type);
+}
+
+/* ---- the scan (split in small functions: keeps m68k gcc 6.5 -O1 happy) --------------------------- */
+static void scan_own_building(int i, const W2Unit *u, const w2_unit_type *t, const AiRace *r)
+{
+	int tier = hall_tier_of(u->type);
+	if (u->flags & W2_UF_UNDERCONST) { s_cons[u->type]++; return; }
+	s_done[u->type]++;
+	if (t->food > 0) s_food_sup += t->food;
+	if (tier) {
+		if (tier > s_hall_tier) s_hall_tier = tier;
+		if (s_nhalls < 8) s_halls[s_nhalls++] = (uint16_t)i;
+	}
+	switch (u->order) {
+	case W2_ORD_TRAIN:
+		if (u->queue_type < W2_NUM_UNIT_TYPES) { s_train[u->queue_type]++; s_food_used++; }
+		break;
+	case W2_ORD_RESEARCH:
+		if (u->queue_type < 64) s_research[u->queue_type >> 5] |= 1u << (u->queue_type & 31);
+		break;
+	case W2_ORD_UPGRADE_TO:
+		s_upgrading = u->queue_type;
+		if (u->queue_type < W2_NUM_UNIT_TYPES) s_cons[u->queue_type]++;
+		break;
+	default:
+		if (is_idle(u)) {
+			if (s_idle[u->type] < 0) s_idle[u->type] = (int16_t)i;
+			if (u->type == r->bld[B_BARRACKS] && s_nprod < AI_MAX_PROD) s_prod[s_nprod++] = (uint16_t)i;
+		}
+	}
+}
+
+static int worker_job(const W2Unit *u)
+{
+	if (u->flags & W2_UF_INSIDE) return (u->res_kind == W2_RES_WOOD) ? J_WOOD : J_GOLD;
+	if (is_idle(u)) return J_IDLE;
+	if (u->order == W2_ORD_HARVEST) {
+		if (u->target != W2_NO_UNIT && u->target < W2_MAX_UNITS && w2.unit[u->target].type == W2U_GOLD_MINE) return J_GOLD;
+		return J_WOOD;
+	}
+	if (u->order == W2_ORD_RETURN) return (u->res_kind == W2_RES_WOOD) ? J_WOOD : J_GOLD;
+	return J_BUSY;
+}
+
+static W2_AI_NOINLINE void scan_own(int p, int i, const W2Unit *u, const w2_unit_type *t, const AiRace *r)
+{
+	uint16_t key = (uint16_t)(0x8000u | ((unsigned)p << 8) | u->type);
+	if (ai_key[i] != key) { ai_key[i] = key; ai_hp[i] = u->hp; ai_role[i] = ROLE_HOME; ai_retry[i] = 0; }
+	if (u->hp < ai_hp[i] && s_nhurt < AI_MAX_HURT) s_hurt[s_nhurt++] = (uint16_t)i;
+	ai_hp[i] = u->hp;
+	if (u->flags & W2_UF_BUILDING) { scan_own_building(i, u, t, r); return; }
+	s_done[u->type]++;
+	if (t->food < 0) s_food_used += -t->food;
+	if (t->flags & W2UF_WORKER) {
+		int job = worker_job(u);
+		if (job == J_GOLD) s_ngold++;
+		if (job == J_WOOD) s_nwood++;
+		if (s_nwork < AI_MAX_WORK) { s_work[s_nwork] = (uint16_t)i; s_job[s_nwork++] = (uint8_t)job; }
+	} else if ((t->flags & W2UF_CAN_ATTACK) && (t->kind == W2_KIND_LAND || t->kind == W2_KIND_AIR) &&
+	           !(t->flags & W2UF_VOLATILE)) {
+		if (s_narmy < AI_MAX_ARMY) s_army[s_narmy++] = (uint16_t)i;
+	}
+}
+
+static W2_AI_NOINLINE void scan_enemy(int p, int i, const W2Unit *u, int home_tx, int home_ty)
+{
+	if (u->flags & W2_UF_BUILDING) {
+		int ix = u->ty * w2.map.w + u->tx, d;
+		if (ix >= 0 && ix < W2_MAP_MAX * W2_MAP_MAX && ((w2.map.explored[ix] >> p) & 1u)) {
+			d = udist_tile(i, home_tx, home_ty);
+			if (d < s_ebld_d) { s_ebld_d = d; s_ebld = i; }
+		}
+	} else if (!(u->flags & (W2_UF_INSIDE | W2_UF_HIDDEN)) && s_nenemy < AI_MAX_ENEMY &&
+	           udist_tile(i, home_tx, home_ty) <= AI_ENEMY_R) {
+		s_enemy[s_nenemy++] = (uint16_t)i;
+	}
+}
+
+/* home hall: the best tier among halls with a gold mine close by, else the best tier;
+ * main mine: the nearest one to home */
+static void scan_home(AiState *st)
+{
+	int i, j, best = 0x7FFF;
+	for (j = 0; j < s_nhalls; j++) {
+		int h = s_halls[j], hx, hy, md = 0x7FFF, score;
+		ucentre(h, &hx, &hy);
+		for (i = 0; i < s_nmine; i++) { int d = udist_tile(s_mine[i], hx, hy); if (d < md) md = d; }
+		score = (md <= 10 ? 0 : 100) - 10 * hall_tier_of(w2.unit[h].type) + (md < 50 ? md : 50) / 10;
+		if (score < best) { best = score; s_hall = h; }
+	}
+	if (s_hall >= 0) {
+		int hx, hy;
+		ucentre(s_hall, &hx, &hy);
+		st->home_tx = (int16_t)hx; st->home_ty = (int16_t)hy;
+	}
+	best = 0x7FFF;
+	for (i = 0; i < s_nmine; i++) {
+		int d = udist_tile(s_mine[i], st->home_tx, st->home_ty);
+		if (d < best) { best = d; s_main_mine = s_mine[i]; }
+	}
+}
+
+static void scan(int p)
+{
+	AiState *st = &ai_st[p];
+	const AiRace *r = &ai_races[st->race];
+	int i, htx = st->home_tx, hty = st->home_ty;
+	uint16_t emask = w2.player[p].enemies;
+
+	s_p = p;
+	memset(s_done, 0, sizeof s_done); memset(s_cons, 0, sizeof s_cons); memset(s_train, 0, sizeof s_train);
+	memset(s_alive, 0, sizeof s_alive);
+	for (i = 0; i < (int)W2_NUM_UNIT_TYPES; i++) s_idle[i] = -1;
+	s_research[0] = s_research[1] = 0;
+	s_nwork = s_narmy = s_nenemy = s_nmine = s_nhurt = s_nprod = s_nhalls = 0;
+	s_hall = -1; s_hall_tier = 0; s_upgrading = 0; s_main_mine = -1;
+	s_food_sup = s_food_used = 0; s_ebld = -1; s_ebld_d = 0x7FFF; s_ngold = s_nwood = 0;
+
+	for (i = 0; i < w2.unit_hi; i++) {
+		const W2Unit *u = &w2.unit[i];
+		const w2_unit_type *t;
+		if (!(u->flags & W2_UF_ALIVE) || (u->flags & W2_UF_DYING)) continue;
+		t = w2_unit(u->type);
+		if (!t) continue;
+		if (u->owner < W2_MAX_PLAYERS && u->owner != W2_NEUTRAL) s_alive[u->owner]++;
+		if (u->type == W2U_GOLD_MINE) {
+			if (u->res_left > 0 && s_nmine < AI_MAX_MINE) s_mine[s_nmine++] = (uint16_t)i;
+		} else if (u->owner == p) {
+			scan_own(p, i, u, t, r);
+		} else if (u->owner < W2_MAX_PLAYERS && ((emask >> u->owner) & 1u)) {
+			scan_enemy(p, i, u, htx, hty);
+		}
+	}
+	scan_home(st);
+}
+
+/* ---- build sites ------------------------------------------------------------------------------ */
+static int tile_free_for_building(int p, int x, int y)
+{
+	int ix = y * w2.map.w + x;
+	uint16_t f = w2.map.flags[ix], o;
+	if (!(f & W2_TF_LAND)) return 0;
+	if (f & (W2_TF_WATER | W2_TF_COAST | W2_TF_TREE | W2_TF_ROCK | W2_TF_WALL | W2_TF_BUILDING | W2_TF_NOBUILD | W2_TF_NOWALK)) return 0;
+	o = w2.map.occ_ground[ix];
+	if (o != W2_NO_UNIT && o < W2_MAX_UNITS && (w2.unit[o].flags & W2_UF_ALIVE) &&
+	    ((w2.unit[o].flags & W2_UF_BUILDING) || w2.unit[o].owner != p)) return 0;
+	return 1;
+}
+
+/* tiles strictly between two rectangles (chebyshev gap); 0 = touching or overlapping */
+static int rect_gap(int ax, int ay, int aw, int ah, int bx, int by, int bw, int bh)
+{
+	int gx = 0, gy = 0;
+	if (bx >= ax + aw) gx = bx - (ax + aw); else if (ax >= bx + bw) gx = ax - (bx + bw); else gx = -1;
+	if (by >= ay + ah) gy = by - (ay + ah); else if (ay >= by + bh) gy = ay - (by + bh); else gy = -1;
+	if (gx < 0 && gy < 0) return -1;
+	return gx > gy ? gx : gy;
+}
+
+int ai_site_ok(int p, int type, int tx, int ty)
+{
+	const w2_unit_type *t = w2_unit((unsigned)type);
+	int w, h, x, y, i, hall;
+	if (!t) return 0;
+	w = t->tile_w; h = t->tile_h;
+	hall = (t->flags & W2UF_STORE_HALL) != 0;
+	if (tx < 1 || ty < 1 || tx + w > w2.map.w - 1 || ty + h > w2.map.h - 1) return 0;
+	for (y = ty; y < ty + h; y++)
+		for (x = tx; x < tx + w; x++)
+			if (!tile_free_for_building(p, x, y)) return 0;
+	/* keep a one-tile lane around every building */
+	for (x = tx - 1; x <= tx + w; x++) {
+		if (w2.map.flags[(ty - 1) * w2.map.w + x] & W2_TF_BUILDING) return 0;
+		if (w2.map.flags[(ty + h) * w2.map.w + x] & W2_TF_BUILDING) return 0;
+	}
+	for (y = ty; y < ty + h; y++) {
+		if (w2.map.flags[y * w2.map.w + tx - 1] & W2_TF_BUILDING) return 0;
+		if (w2.map.flags[y * w2.map.w + tx + w] & W2_TF_BUILDING) return 0;
+	}
+	/* away from gold mines (halls: the original's 3-tile rule) */
+	for (i = 0; i < s_nmine; i++) {
+		const W2Unit *m = &w2.unit[s_mine[i]];
+		const w2_unit_type *mt = w2_unit(m->type);
+		if (rect_gap(tx, ty, w, h, m->tx, m->ty, mt->tile_w, mt->tile_h) < (hall ? 3 : 2)) return 0;
+	}
+	/* never in the lane between the home hall and its mine */
+	if (!hall && s_hall >= 0 && s_main_mine >= 0) {
+		const W2Unit *a = &w2.unit[s_hall], *m = &w2.unit[s_main_mine];
+		const w2_unit_type *at = w2_unit(a->type), *mt = w2_unit(m->type);
+		int x0 = a->tx < m->tx ? a->tx : m->tx, y0 = a->ty < m->ty ? a->ty : m->ty;
+		int x1 = a->tx + at->tile_w > m->tx + mt->tile_w ? a->tx + at->tile_w : m->tx + mt->tile_w;
+		int y1 = a->ty + at->tile_h > m->ty + mt->tile_h ? a->ty + at->tile_h : m->ty + mt->tile_h;
+		if (cheb(a->tx, a->ty, m->tx, m->ty) <= 12 && rect_gap(tx, ty, w, h, x0, y0, x1 - x0, y1 - y0) < 0) return 0;
+	}
+	return 1;
+}
+
+int ai_find_site(int p, int type, int cx, int cy, int builder, int *otx, int *oty)
+{
+	const w2_unit_type *t = w2_unit((unsigned)type);
+	int r, k, w, h, skip, fb = 0, fbx = 0, fby = 0;
+	if (!t) return 0;
+	w = t->tile_w; h = t->tile_h;
+	skip = (p < AI_MAX_P) ? (ai_st[p].site_fail & 7) : 0;
+	for (r = 0; r <= AI_SITE_R; r++) {
+		int n = r ? 8 * r : 1;
+		for (k = 0; k < n; k++) {
+			int dx, dy, tx, ty;
+			/* walk the ring: top row, right column, bottom row, left column */
+			if (!r) { dx = 0; dy = 0; }
+			else if (k < 2 * r) { dx = -r + k; dy = -r; }
+			else if (k < 4 * r) { dx = r; dy = -r + (k - 2 * r); }
+			else if (k < 6 * r) { dx = r - (k - 4 * r); dy = r; }
+			else { dx = -r; dy = r - (k - 6 * r); }
+			tx = cx + dx - w / 2; ty = cy + dy - h / 2;
+			if (!ai_site_ok(p, type, tx, ty)) continue;
+			if (skip > 0) { skip--; continue; }
+			if (econ_place_ok(p, type, tx, ty, builder)) { *otx = tx; *oty = ty; return 1; }
+			if (!fb) { fb = 1; fbx = tx; fby = ty; }
+		}
+	}
+	if (fb) { *otx = fbx; *oty = fby; return 1; }   /* economy refused everything: own terrain test */
+	return 0;
+}
+
+/* nearest worker to (x,y) that may be pulled off its job to build */
+static int pick_builder(int x, int y)
+{
+	int i, best = -1, bd = 0x7FFF, pass;
+	for (pass = 0; pass < 3 && best < 0; pass++)
+		for (i = 0; i < s_nwork; i++) {
+			int s = s_work[i], d;
+			const W2Unit *u = &w2.unit[s];
+			if (u->flags & W2_UF_INSIDE) continue;
+			if (pass == 0 && s_job[i] != J_IDLE) continue;
+			if (pass == 1 && (s_job[i] != J_WOOD || u->res_amount)) continue;
+			if (pass == 2 && (s_job[i] != J_GOLD || u->res_amount)) continue;
+			d = udist_tile(s, x, y);
+			if (d < bd) { bd = d; best = i; }
+		}
+	return best;
+}
+
+/* order a building at a site near (cx,cy). 1 = issued, 0 = not possible now */
+static int try_build(int p, int type, int cx, int cy, int urgent)
+{
+	AiState *st = &ai_st[p];
+	const w2_unit_type *t = w2_unit((unsigned)type);
+	int wi, b, tx, ty, i;
+	if (!t || !req_ok(p, type)) return 0;
+	if (!can_spend(t->gold, t->wood, t->oil, urgent)) { reserve(t->gold, t->wood, t->oil); return 0; }
+	if (pend_count(-1) >= 2) return 0;
+	wi = pick_builder(cx, cy);
+	if (wi < 0) return 0;
+	b = s_work[wi];
+	if (!ai_find_site(p, type, cx, cy, b, &tx, &ty)) { ai_log(p, "no site for %s near %d,%d", tname(type), cx, cy); return 0; }
+	cmd_build(b, type, tx, ty);
+	if (w2.unit[b].order != W2_ORD_BUILD) {
+		st->site_fail++;
+		ai_log(p, "build %s at %d,%d by #%d REJECTED", tname(type), tx, ty, b);
+		return 0;
+	}
+	for (i = 0; i < AI_MAX_PEND; i++)
+		if (st->pend[i].builder < 0) {
+			st->pend[i].builder = (int16_t)b; st->pend[i].type = (uint8_t)type;
+			st->pend[i].tx = (uint8_t)tx; st->pend[i].ty = (uint8_t)ty; st->pend[i].t = w2.cycle;
+			break;
+		}
+	if (s_job[wi] == J_GOLD) s_ngold--;
+	if (s_job[wi] == J_WOOD) s_nwood--;
+	s_job[wi] = J_BUSY;
+	spend(t->gold, t->wood, t->oil);
+	ai_log(p, "build %s at %d,%d by #%d", tname(type), tx, ty, b);
+	return 1;
+}
+
+static void check_pending(int p)
+{
+	AiState *st = &ai_st[p];
+	int i;
+	for (i = 0; i < AI_MAX_PEND; i++) {
+		AiPend *pd = &st->pend[i];
+		const W2Unit *u;
+		const w2_unit_type *t;
+		int ix, o, keep = 1;
+		if (pd->builder < 0) continue;
+		u = &w2.unit[pd->builder];
+		ix = pd->ty * w2.map.w + pd->tx;
+		o = w2.map.occ_ground[ix];
+		if (!(u->flags & W2_UF_ALIVE) || u->owner != p || u->order != W2_ORD_BUILD) keep = 0;
+		if (o != W2_NO_UNIT && o < W2_MAX_UNITS && w2.unit[o].type == pd->type && (w2.unit[o].flags & W2_UF_BUILDING)) keep = 0;
+		if (w2.cycle - pd->t > AI_PEND_TTL) {
+			keep = 0;
+			if ((u->flags & W2_UF_ALIVE) && u->owner == p && u->order == W2_ORD_BUILD) cmd_stop(pd->builder);
+			ai_log(p, "build %s at %d,%d timed out", tname(pd->type), pd->tx, pd->ty);
+		}
+		if (!keep) pd->builder = -1;
+		else if ((t = w2_unit(pd->type)) != NULL) spend(t->gold, t->wood, t->oil);   /* not paid yet */
+	}
+}
+
+/* ---- economy ---------------------------------------------------------------------------------- */
+static int find_tree(int p)
+{
+	AiState *st = &ai_st[p];
+	int r, k;
+	if (st->tree_tx >= 0 && (w2.map.flags[st->tree_ty * w2.map.w + st->tree_tx] & W2_TF_TREE)) return 1;
+	st->tree_tx = st->tree_ty = -1;
+	for (r = 2; r <= 32; r++)
+		for (k = 0; k < 8 * r; k++) {
+			int dx, dy, x, y, j;
+			if (k < 2 * r) { dx = -r + k; dy = -r; }
+			else if (k < 4 * r) { dx = r; dy = -r + (k - 2 * r); }
+			else if (k < 6 * r) { dx = r - (k - 4 * r); dy = r; }
+			else { dx = -r; dy = r - (k - 6 * r); }
+			x = st->home_tx + dx; y = st->home_ty + dy;
+			if (x < 1 || y < 1 || x >= w2.map.w - 1 || y >= w2.map.h - 1) continue;
+			if (!(w2.map.flags[y * w2.map.w + x] & W2_TF_TREE)) continue;
+			for (j = 0; j < 8; j++) {   /* needs a walkable neighbour */
+				static const int8_t nx[8] = { 0, 1, 1, 1, 0, -1, -1, -1 }, ny[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
+				uint16_t f = w2.map.flags[(y + ny[j]) * w2.map.w + x + nx[j]];
+				if ((f & W2_TF_LAND) && !(f & (W2_TF_TREE | W2_TF_ROCK | W2_TF_WALL | W2_TF_WATER | W2_TF_BUILDING | W2_TF_NOWALK))) {
+					st->tree_tx = (int16_t)x; st->tree_ty = (int16_t)y;
+					return 1;
+				}
+			}
+		}
+	return 0;
+}
+
+static void assign_workers(int p)
+{
+	AiState *st = &ai_st[p];
+	int i, nidle = 0, total, want_gold, have_tree, have_mine = s_main_mine >= 0 && s_hall >= 0;
+	const w2_unit_type *mt;
+	if (s_hall < 0) return;   /* nothing to return goods to */
+	have_tree = find_tree(p);
+	for (i = 0; i < s_nwork; i++) if (s_job[i] == J_IDLE) nidle++;
+	total = s_ngold + s_nwood + nidle;
+	want_gold = (total * 2 + 2) / 3;
+	if (w2.player[p].wood < 300 && w2.player[p].gold > 1200) want_gold = total / 2;
+	if (w2.player[p].wood > 1500 && w2.player[p].gold < 600) want_gold = (total * 4 + 4) / 5;
+	if (w2.player[p].wood > 4000 && w2.player[p].wood > 4 * w2.player[p].gold) want_gold = total - 1 - total / 10;
+	if (!have_tree) want_gold = total;
+	if (!have_mine) want_gold = 0;
+	mt = have_mine ? w2_unit(w2.unit[s_main_mine].type) : NULL;
+	for (i = 0; i < s_nwork; i++) {
+		int s = s_work[i];
+		W2Unit *u = &w2.unit[s];
+		if (s_job[i] != J_IDLE) continue;
+		if (u->res_amount && u->res_kind) { cmd_return(s); s_job[i] = J_BUSY; continue; }
+		if (have_mine && s_ngold < want_gold) {
+			cmd_harvest(s, s_main_mine, w2.unit[s_main_mine].tx + mt->tile_w / 2, w2.unit[s_main_mine].ty + mt->tile_h / 2);
+			s_job[i] = J_GOLD; s_ngold++;
+			ai_log(p, "worker #%d -> gold mine #%d", s, s_main_mine);
+		} else if (have_tree) {
+			cmd_harvest(s, -1, st->tree_tx, st->tree_ty);
+			s_job[i] = J_WOOD; s_nwood++;
+			ai_log(p, "worker #%d -> wood %d,%d", s, st->tree_tx, st->tree_ty);
+		}
+	}
+	/* rebalance one worker per think */
+	if (have_tree && s_ngold > want_gold + 1) {
+		for (i = 0; i < s_nwork; i++) {
+			const W2Unit *u = &w2.unit[s_work[i]];
+			if (s_job[i] == J_GOLD && u->order == W2_ORD_HARVEST && !(u->flags & W2_UF_INSIDE) && !u->res_amount) {
+				cmd_harvest(s_work[i], -1, st->tree_tx, st->tree_ty);
+				s_job[i] = J_WOOD; s_ngold--; s_nwood++;
+				ai_log(p, "rebalance #%d gold -> wood", s_work[i]);
+				break;
+			}
+		}
+	} else if (have_mine && s_ngold + 1 < want_gold) {
+		for (i = 0; i < s_nwork; i++) {
+			const W2Unit *u = &w2.unit[s_work[i]];
+			if (s_job[i] == J_WOOD && u->order == W2_ORD_HARVEST && !(u->flags & W2_UF_INSIDE) && !u->res_amount) {
+				cmd_harvest(s_work[i], s_main_mine, w2.unit[s_main_mine].tx + mt->tile_w / 2, w2.unit[s_main_mine].ty + mt->tile_h / 2);
+				s_job[i] = J_GOLD; s_ngold++; s_nwood--;
+				ai_log(p, "rebalance #%d wood -> gold", s_work[i]);
+				break;
+			}
+		}
+	}
+}
+
+static int food_free(void) { return s_food_sup - s_food_used; }
+
+static void try_research(int p, int upg)
+{
+	const w2_upgrade *g = &w2_upgrades[upg];
+	int b, lvl1 = -1, i;
+	const AiRace *r = &ai_races[ai_st[p].race];
+	if (researched(p, upg) || researching(upg)) return;
+	for (i = 0; i < 8; i += 2) if (r->upg[i + 1] == upg) lvl1 = r->upg[i];
+	if (lvl1 >= 0 && !researched(p, lvl1)) return;
+	if (g->researched_at >= W2_NUM_UNIT_TYPES) return;
+	b = s_idle[g->researched_at];
+	if (b < 0 || !econ_allowed_upgrade(p, upg)) return;
+	if (!can_spend(g->gold, g->wood, g->oil, 0)) return;
+	cmd_research(b, upg);
+	spend(g->gold, g->wood, g->oil);
+	s_idle[g->researched_at] = -1;
+	s_research[upg >> 5] |= 1u << (upg & 31);
+	ai_log(p, "research %s at #%d", g->name, b);
+}
+
+/* walk the build order; returns the worker target, *blocked = step index or -1 */
+static int run_build_order(int p, int *blocked)
+{
+	AiState *st = &ai_st[p];
+	const AiRace *r = &ai_races[st->race];
+	int k, wt = 4;
+	*blocked = -1;
+	for (k = 0; k < AI_NSTEPS; k++) {
+		const AiStep *s = &ai_order[k];
+		switch (s->kind) {
+		case S_WORKERS:   /* the build order waits until the workers are there (or in training) */
+			wt = s->n;
+			if (s_done[r->worker] + s_train[r->worker] < s->n) { *blocked = k; return wt; }
+			break;
+		case S_RESEARCH:
+			try_research(p, r->upg[s->what]);
+			break;
+		case S_BUILD: {
+			int type = r->bld[s->what];
+			if (total_of(type) >= s->n) break;
+			if (!req_ok(p, type)) break;              /* cannot yet: do not block on it */
+			*blocked = k;
+			try_build(p, type, st->home_tx, st->home_ty, 1);
+			return wt;
+		}
+		case S_HALL: {
+			int type = r->hall[s->n];
+			const w2_unit_type *t = w2_unit((unsigned)type);
+			if (s_hall_tier >= s->n || s_upgrading) break;
+			if (!req_ok(p, type)) break;
+			*blocked = k;
+			{
+				/* the hall to upgrade is one of the previous tier (the home hall may be an expansion's
+				 * lower-tier hall, or already upgraded); cmd_upgrade_to refuses anything else silently */
+				int h = -1, i;
+				if (s_hall >= 0 && w2.unit[s_hall].type == t->upgrade_from && is_idle(&w2.unit[s_hall])) h = s_hall;
+				for (i = 0; h < 0 && i < w2.unit_hi; i++) {
+					const W2Unit *v = &w2.unit[i];
+					if ((v->flags & W2_UF_ALIVE) && !(v->flags & W2_UF_UNDERCONST) && v->owner == p &&
+					    v->type == t->upgrade_from && is_idle(v)) h = i;
+				}
+				if (h >= 0 && can_spend(t->gold, t->wood, t->oil, 1)) {
+					cmd_upgrade_to(h, type);
+					if (w2.unit[h].order == W2_ORD_UPGRADE_TO) {
+						spend(t->gold, t->wood, t->oil);
+						ai_log(p, "upgrade hall #%d -> %s", h, tname(type));
+					}
+				} else reserve(t->gold, t->wood, t->oil);
+			}
+			return wt;
+		}
+		}
+	}
+	return wt;
+}
+
+static void economy(int p, int *wt_out)
+{
+	AiState *st = &ai_st[p];
+	const AiRace *r = &ai_races[st->race];
+	int wt, blocked, i, workers, nhalls = 0, farm_soon, need;
+
+	/* 1. no town hall at all: build one near the nearest gold mine (everything else waits) */
+	if (s_hall < 0) {
+		int hall = r->hall[1];
+		*wt_out = 1;
+		st->info.step = -1;
+		if (s_cons[hall] + s_cons[r->hall[2]] + s_cons[r->hall[3]] + pend_count(hall) == 0) {
+			int cx = st->home_tx, cy = st->home_ty;
+			if (s_main_mine >= 0) ucentre(s_main_mine, &cx, &cy);
+			try_build(p, hall, cx, cy, 1);
+		}
+		return;
+	}
+
+	/* 2. home mine exhausted / far away: a new town hall at the nearest mine with gold left */
+	if (s_main_mine >= 0 && udist_tile(s_main_mine, st->home_tx, st->home_ty) > 10 &&
+	    s_cons[r->hall[1]] + pend_count(r->hall[1]) == 0 && s_done[r->worker] >= 4) {
+		int cx, cy;
+		ucentre(s_main_mine, &cx, &cy);
+		if (try_build(p, r->hall[1], cx, cy, 1)) ai_log(p, "expanding to gold mine #%d", s_main_mine);
+	}
+
+	/* 3. farms ahead of the food cap */
+	need = 3 + s_nprod + 2 * (s_done[r->bld[B_BARRACKS]] > 0);
+	farm_soon = (s_cons[r->farm] + pend_count(r->farm)) * 4;
+	if (food_free() + farm_soon < need && s_food_sup < 200 && pend_count(r->farm) + s_cons[r->farm] < 2)
+		try_build(p, r->farm, st->home_tx, st->home_ty, 1);
+
+	/* 4. build order (buildings, hall upgrades, research) */
+	wt = run_build_order(p, &blocked);
+	st->info.step = blocked;
+	*wt_out = wt;
+
+	/* 5. workers */
+	workers = s_done[r->worker] + s_train[r->worker];
+	for (i = 1; i <= 3; i++) {
+		int h = s_idle[r->hall[i]];
+		const w2_unit_type *t = w2_unit(r->worker);
+		if (h < 0) continue;
+		nhalls++;
+		if (workers >= wt || food_free() <= 0) break;
+		if (!can_spend(t->gold, t->wood, t->oil, 1)) break;   /* workers are the income: never starved */
+		cmd_train(h, r->worker);
+		spend(t->gold, t->wood, t->oil);
+		s_food_used++; workers++;
+		ai_log(p, "train %s at #%d (%d/%d)", tname(r->worker), h, workers, wt);
+	}
+	(void)nhalls;
+}
+
+/* ---- military --------------------------------------------------------------------------------- */
+static void train_army(int p)
+{
+	const AiRace *r = &ai_races[ai_st[p].race];
+	static const uint8_t weight[4] = { 3, 2, 4, 1 };
+	int i, k, army = s_narmy;
+	for (i = 0; i < s_nprod; i++) {
+		int types[4], best = -1, bscore = 0x7FFFFFFF;
+		const w2_unit_type *t;
+		if (army >= AI_ARMY_CAP || food_free() <= 0) return;
+		types[0] = r->melee; types[1] = r->ranged; types[2] = r->cavalry; types[3] = r->siege;
+		for (k = 0; k < 4; k++) {
+			int ty = types[k], score;
+			const w2_unit_type *tt = w2_unit((unsigned)ty);
+			if (!req_ok(p, ty)) continue;
+			if (k == 3 && army < 6) continue;
+			if (!can_spend(tt->gold, tt->wood, tt->oil, 0)) continue;
+			score = (s_done[ty] + s_train[ty]) * 100 / weight[k];
+			if (score < bscore) { bscore = score; best = ty; }
+		}
+		if (best < 0) return;
+		t = w2_unit((unsigned)best);
+		cmd_train(s_prod[i], best);
+		spend(t->gold, t->wood, t->oil);
+		s_train[best]++; s_food_used++; army++;
+		ai_log(p, "train %s at #%d (army %d)", tname(best), s_prod[i], army);
+	}
+}
+
+/* target for an attack: nearest explored enemy building, else the nearest unvisited enemy start */
+static int pick_target(int p, int *tx, int *ty)
+{
+	AiState *st = &ai_st[p];
+	int q, bd = 0x7FFF, found = 0;
+	if (s_ebld >= 0) { ucentre(s_ebld, tx, ty); return 1; }
+	for (q = 0; q < AI_MAX_P; q++) {
+		const W2Player *e = &w2.player[q];
+		int d;
+		if (q == p || !((w2.player[p].enemies >> q) & 1u) || e->control == W2_CTRL_NOBODY || e->defeated) continue;
+		if (!s_alive[q] || e->start_tx == 0xFFFF || ((st->visited >> q) & 1u)) continue;
+		d = cheb(st->home_tx, st->home_ty, e->start_tx, e->start_ty);
+		if (d < bd) { bd = d; *tx = e->start_tx; *ty = e->start_ty; found = 1; }
+	}
+	return found;
+}
+
+int ai_wave_size(int n)
+{
+	int last = (int)sizeof ai_waves - 1;
+	return ai_waves[n < last ? n : last];
+}
+static int wave_reserve(int wave) { return wave >= 2 ? 2 : 0; }
+
+static int find_threat(int p)
+{
+	AiState *st = &ai_st[p];
+	int i, j, best = -1, bd = 0x7FFF;
+	for (i = 0; i < s_nenemy; i++) {
+		int e = s_enemy[i], d;
+		const w2_unit_type *t = w2_unit(w2.unit[e].type);
+		if (!(t->flags & W2UF_CAN_ATTACK) || (t->flags & W2UF_WORKER)) continue;
+		d = udist_tile(e, st->home_tx, st->home_ty);
+		if (d <= AI_HOME_R && d < bd) { bd = d; best = e; }
+	}
+	if (best >= 0) return best;
+	for (j = 0; j < s_nhurt; j++) {   /* whoever hurts our units near home */
+		int hx, hy;
+		ucentre(s_hurt[j], &hx, &hy);
+		if (cheb(hx, hy, st->home_tx, st->home_ty) > AI_ENEMY_R) continue;
+		for (i = 0; i < s_nenemy; i++) {
+			int d = udist_tile(s_enemy[i], hx, hy);
+			if (d <= 8 && d < bd) { bd = d; best = s_enemy[i]; }
+		}
+	}
+	return best;
+}
+
+static void military(int p)
+{
+	AiState *st = &ai_st[p];
+	int i, threat, home_idle = 0, attackers = 0, tx = -1, ty = -1, have_t, rx, ry, need;
+
+	threat = find_threat(p);
+	st->info.threat = threat;
+	if (threat >= 0) {
+		int n = 0;
+		for (i = 0; i < s_narmy; i++) {
+			int s = s_army[i];
+			const W2Unit *u = &w2.unit[s];
+			if (ai_role[s] != ROLE_HOME) continue;
+			if (u->order == W2_ORD_ATTACK && u->target != W2_NO_UNIT) continue;   /* already fighting */
+			cmd_attack(s, threat);
+			n++;
+		}
+		if (n) ai_log(p, "defend: %d units -> %s #%d at %d,%d", n, tname(w2.unit[threat].type), threat,
+		              w2.unit[threat].tx, w2.unit[threat].ty);
+	}
+
+	have_t = pick_target(p, &tx, &ty);
+	/* rally point: 5 tiles from home toward the enemy */
+	rx = st->home_tx; ry = st->home_ty;
+	if (have_t) { rx += (tx > rx) ? 5 : (tx < rx ? -5 : 0); ry += (ty > ry) ? 5 : (ty < ry ? -5 : 0); }
+	if (rx < 1) rx = 1;
+	if (ry < 1) ry = 1;
+	if (rx > w2.map.w - 2) rx = w2.map.w - 2;
+	if (ry > w2.map.h - 2) ry = w2.map.h - 2;
+
+	/* attackers: new target, or reached it, or stuck */
+	if (have_t && (tx != st->att_tx || ty != st->att_ty) && st->att_tx >= 0) {
+		ai_log(p, "attack target -> %d,%d", tx, ty);
+	}
+	for (i = 0; i < s_narmy; i++) {
+		int s = s_army[i];
+		const W2Unit *u = &w2.unit[s];
+		if (ai_role[s] != ROLE_ATTACK) continue;
+		attackers++;
+		if (!is_idle(u)) continue;
+		if (st->att_tx >= 0 && udist_tile(s, st->att_tx, st->att_ty) <= 3 && s_ebld < 0) {
+			int q;   /* reached an enemy start location with nothing known there */
+			for (q = 0; q < AI_MAX_P; q++)
+				if (w2.player[q].start_tx != 0xFFFF && cheb(w2.player[q].start_tx, w2.player[q].start_ty, st->att_tx, st->att_ty) <= 3 &&
+				    !((st->visited >> q) & 1u)) {
+					st->visited |= (uint8_t)(1u << q);
+					ai_log(p, "start of player %d at %d,%d is empty", q, st->att_tx, st->att_ty);
+				}
+			have_t = pick_target(p, &tx, &ty);
+		}
+		if (!have_t || ai_retry[s] > 6) {
+			ai_role[s] = ROLE_HOME; ai_retry[s] = 0;
+			cmd_move(s, rx, ry);
+			continue;
+		}
+		if (tx == st->att_tx && ty == st->att_ty) ai_retry[s]++;
+		cmd_attack_move(s, tx, ty);
+	}
+	if (have_t && attackers) { st->att_tx = (int16_t)tx; st->att_ty = (int16_t)ty; }
+	if (!attackers) st->att_tx = st->att_ty = -1;
+
+	/* idle home army */
+	for (i = 0; i < s_narmy; i++)
+		if (ai_role[s_army[i]] == ROLE_HOME && is_idle(&w2.unit[s_army[i]])) home_idle++;
+
+	/* launch a wave */
+	need = ai_wave_size(st->wave) + st->wave_extra + wave_reserve(st->wave);
+	if (threat < 0 && have_t && home_idle >= need) {
+		int keep = wave_reserve(st->wave), n = 0;
+		for (i = 0; i < s_narmy; i++) {
+			int s = s_army[i];
+			if (ai_role[s] != ROLE_HOME || !is_idle(&w2.unit[s])) continue;
+			if (keep > 0) { keep--; continue; }
+			ai_role[s] = ROLE_ATTACK; ai_retry[s] = 0;
+			cmd_attack_move(s, tx, ty);
+			n++;
+		}
+		ai_log(p, "WAVE %d: %d units attack-move -> %d,%d", st->wave + 1, n, tx, ty);
+		st->wave++;
+		st->wave_extra = (uint8_t)(w2_rand() % 3);
+		st->att_tx = (int16_t)tx; st->att_ty = (int16_t)ty;
+		attackers += n; home_idle -= n;
+	}
+	/* the rest gathers at the rally point */
+	if (threat < 0)
+		for (i = 0; i < s_narmy; i++) {
+			int s = s_army[i];
+			if (ai_role[s] == ROLE_HOME && is_idle(&w2.unit[s]) && udist_tile(s, rx, ry) > 4) cmd_move(s, rx, ry);
+		}
+	st->info.next_wave_size = ai_wave_size(st->wave) + st->wave_extra + wave_reserve(st->wave);
+	st->info.attackers = attackers;
+	st->info.home_army = home_idle;
+	st->info.target_tx = st->att_tx; st->info.target_ty = st->att_ty;
+}
+
+/* ---- think ------------------------------------------------------------------------------------ */
+static void think(int p)
+{
+	AiState *st = &ai_st[p];
+	const AiRace *r = &ai_races[st->race];
+	int wt = 0;
+	if (w2.player[p].defeated) return;
+	scan(p);
+	b_gold = w2.player[p].gold; b_wood = w2.player[p].wood; b_oil = w2.player[p].oil;
+	r_gold = r_wood = r_oil = 0;
+	check_pending(p);
+	economy(p, &wt);
+	train_army(p);
+	assign_workers(p);
+	military(p);
+	st->info.active = 1;
+	st->info.thinks++;
+	st->info.workers = s_done[r->worker] + s_train[r->worker];
+	st->info.worker_target = wt;
+	st->info.gold_workers = s_ngold; st->info.wood_workers = s_nwood;
+	st->info.army = s_narmy;
+	st->info.wave = st->wave;
+	st->info.hall_tier = s_hall_tier;
+	st->info.food_supply = s_food_sup; st->info.food_used = s_food_used;
+	st->info.home_tx = st->home_tx; st->info.home_ty = st->home_ty;
+}
+
+static void init_player(int p)
+{
+	AiState *st = &ai_st[p];
+	int i;
+	memset(st, 0, sizeof *st);
+	st->active = 1;
+	st->race = (uint8_t)(w2.player[p].race & 1);
+	st->att_tx = st->att_ty = -1;
+	st->tree_tx = st->tree_ty = -1;
+	st->info.threat = -1; st->info.target_tx = st->info.target_ty = -1;
+	for (i = 0; i < AI_MAX_PEND; i++) st->pend[i].builder = -1;
+	/* home: start location, else the first own unit (the first think moves it to the hall) */
+	st->home_tx = (int16_t)(w2.player[p].start_tx != 0xFFFF ? w2.player[p].start_tx : 0);
+	st->home_ty = (int16_t)(w2.player[p].start_ty != 0xFFFF ? w2.player[p].start_ty : 0);
+	if (w2.player[p].start_tx == 0xFFFF)
+		for (i = 0; i < w2.unit_hi; i++)
+			if ((w2.unit[i].flags & W2_UF_ALIVE) && w2.unit[i].owner == p) {
+				st->home_tx = (int16_t)w2.unit[i].tx; st->home_ty = (int16_t)w2.unit[i].ty;
+				break;
+			}
+}
+
+/* ---- public ----------------------------------------------------------------------------------- */
+void ai_set_log(int on) { g_log = on; }
+
+void ai_init(void)
+{
+	int p;
+	g_log = w2cfg_extra_int("ai_log", 0);
+	memset(ai_key, 0, sizeof ai_key);
+	memset(ai_role, 0, sizeof ai_role);
+	memset(ai_retry, 0, sizeof ai_retry);
+	for (p = 0; p < AI_MAX_P; p++) {
+		ai_st[p].active = 0;
+		if (w2.player[p].control == W2_CTRL_COMPUTER) {
+			init_player(p);
+			ai_log(p, "init: %s at %d,%d", ai_st[p].race ? "orc" : "human", ai_st[p].home_tx, ai_st[p].home_ty);
+		}
+	}
+}
+
+void ai_tick(void)
+{
+	int p;
+	for (p = 0; p < AI_MAX_P; p++) {
+		if (!ai_st[p].active || w2.player[p].control != W2_CTRL_COMPUTER) continue;
+		if ((w2.cycle + (uint32_t)p * 5u) % AI_THINK_PERIOD) continue;
+		think(p);
+	}
+}
+
+void ai_think_now(int p)
+{
+	if (p < 0 || p >= AI_MAX_P) return;
+	if (!ai_st[p].active) init_player(p);
+	think(p);
+}
+
+void ai_debug_scan(int p)
+{
+	if (p < 0 || p >= AI_MAX_P) return;
+	if (!ai_st[p].active) init_player(p);
+	scan(p);
+}
+
+void ai_get_info(int p, AiInfo *out)
+{
+	if (p < 0 || p >= AI_MAX_P) { memset(out, 0, sizeof *out); return; }
+	*out = ai_st[p].info;
+	out->active = ai_st[p].active;
+}

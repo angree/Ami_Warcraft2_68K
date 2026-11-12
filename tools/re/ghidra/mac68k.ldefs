@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<language_definitions>
+  <language processor="68000" endian="big" size="32" variant="MacTraps" version="1.1"
+            slafile="mac68020.sla" processorspec="68000.pspec" manualindexfile="../manuals/68000.idx"
+            id="68000:BE:32:MacTraps">
+    <description>Motorola 68020 with Macintosh A-line traps as calls</description>
+    <compiler name="default" spec="68000.cspec" id="default"/>
+  </language>
+</language_definitions>

@@ -1,0 +1,25 @@
+# ORIGINAL GAME MATERIAL - never commit, never ship
+WAR2.zip
+/cd/
+/hfs/
+/re/
+/data/
+*.iso
+*.BIN
+*.CUE
+hfs_listing.txt
+# build outputs
+build/host/
+*.o
+*.ppm
+build/obj/
+*.exe
+*.pack
+*.adp
+*.pud
+*.smk
+__pycache__/
+# local-only, not redistributable (CyberGraphX SDK headers)
+/native/cgx-include/
+# agent tooling (local only)
+.claude/

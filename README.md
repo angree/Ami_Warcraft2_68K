@@ -1,0 +1,84 @@
+# Warcraft II 68K
+
+A native port of Blizzard's **Warcraft II: Tides of Darkness** (1995) for classic 68k Amigas, AROS 68k
+and MorphOS — one 68k binary for all of them.
+
+The engine is our own code in plain C, written from scratch for the Amiga (chunky-to-planar, Paula,
+no FPU needed). **No game data is included and none is needed from us: the game runs on the files of
+your own Warcraft II CD**, which you convert once on a PC with the extractor below.
+
+This is an early version (0.1.0): custom games (skirmish) against computer opponents on the maps of
+the CD. See "What works" at the end.
+
+## 1. Extract the data from your own CD (on a PC)
+
+You need your own **Warcraft II for Macintosh** CD (the port is developed and tested with it) as a CD
+image: a `.cue` file with its `.bin` beside it. The image must be a raw one (`.cue`/`.bin`), because the
+music is the CD audio of the disc. A PC CD image or a folder with the PC game files (`MAINDAT.WAR`, ...)
+is accepted as well, but is untested.
+
+**Windows:** unpack `Warcraft2_68K-<version>-converter.zip` anywhere and drag your `.cue` file onto
+`extract.bat`. A window shows the progress; after a short while there is a folder `data` next to
+`extract.bat`.
+
+**Linux:**
+
+```
+./w2conv-linux /path/to/WarcraftII.cue .
+```
+
+What `data` contains:
+
+| | |
+|---|---|
+| `War Data`, `War Resources`, `War Strings`, `War Sounds`, `War Music`, `War Movies` | the game archives of your CD, copied unchanged |
+| `music/*.adp` | the CD audio tracks converted for the Amiga (about 20 MB) |
+| `lores-*.pack` | the art of the 320x240 mode, scaled down once with a proper filter |
+| `ehb-*.pack` | the art of the ECS (64 colour Extra-Half-Brite) mode |
+| `pud/` | the custom maps of the CD |
+| `conversion.txt` | what was converted, with checksums |
+
+Nothing is downloaded and nothing is sent anywhere; the extractor only reads the image you give it.
+Details: [docs/CONVERTER.md](docs/CONVERTER.md).
+
+## 2. Install on the Amiga
+
+1. Unpack `Warcraft2_68K-<version>.lha` — it holds the drawer `Warcraft2_68K`.
+2. Copy the converted `data` folder into it, so that it is `Warcraft2_68K/data`.
+3. Start **w2setup** once: display (AGA, RTG graphics card, ECS Extra-Half-Brite, Workbench window),
+   resolution (640x480 or 320x240), sound (Paula, AHI, off), music, volumes, game speed. "Amiga bar"
+   keeps the screen's title bar and depth gadget so you can switch to other programs.
+4. Start **w2**.
+
+Both programs have Workbench icons and take care of their 2 MB stack themselves.
+
+Requirements: 68020 or better (68040 / fast 68030 recommended), AGA, an RTG card or ECS
+(Extra-Half-Brite, 320x240 only), AmigaOS 3.x, AROS 68k or MorphOS, about 110 MB on disk for `data`.
+Developed and tested with 2 MB chip + 64 MB fast RAM; the real minimum has not been measured yet.
+Your own maps (`.pud`) go into a drawer `maps` next to the program.
+
+## 3. What works in 0.1.0
+
+- Custom game against 1–7 computer opponents on the built-in maps and the CD's custom maps; humans
+  and orcs; gold, lumber and oil; building, training, research and upgrades; land, sea and air
+  combat; fog of war; minimap; the original interface, sounds, unit voices and CD music.
+- 640x480 (AGA, RTG) and 320x240 (AGA, RTG, ECS Extra-Half-Brite) with the hardware mouse pointer.
+- Not yet: the campaigns and their briefings, spells, transports, saving games, multiplayer.
+  MorphOS is supported by design but has not been tested yet. Speed work (drawing only what changed)
+  is still ahead, so 640x480 on AGA is slow on anything below a fast 68040/060; use 320x240 or RTG.
+
+## 4. Building
+
+See [docs/BUILD.md](docs/BUILD.md) (bebbo's m68k-amigaos-gcc 6.5 in WSL/Linux; a host build with
+sanitizers for testing: [docs/HOST_TEST.md](docs/HOST_TEST.md)). The CyberGraphX SDK headers are not
+part of this repository (`native/cgx-include/`).
+
+## 5. Legal
+
+Warcraft II is a trademark of Blizzard Entertainment. This project is not affiliated with or endorsed
+by Blizzard. It contains no Blizzard code and no Blizzard data, and it is useless without an original
+copy of the game.
+
+The source is under the GNU General Public License version 2 (see `LICENSE`). The unit and upgrade
+tables were generated from the game facts documented by the Wargus project (GPL v2). The 3x5 font is
+CC0. The chunky-to-planar routines are by Mikael Kalms (public domain).

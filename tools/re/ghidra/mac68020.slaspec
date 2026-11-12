@@ -1,0 +1,7 @@
+# Motorola 68020 + Macintosh A-line traps (Warcraft II Mac reverse-engineering aid).
+# Every A-line word 0xAnnn becomes "call 0x00F00000 + (nnn*2)"; the import script puts a stub
+# function named after the trap at each such address, so the decompiler shows _GetResource(...).
+@include "68000.sinc"
+
+atrapdest: reloc is op015 [ reloc = 0x00F00000 + ((op015 & 0x0fff) << 1); ] { export *[ram]:4 reloc; }
+:aline atrapdest is op=10 & atrapdest { call atrapdest; }
