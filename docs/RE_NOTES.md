@@ -352,3 +352,39 @@ From the War Resources menu records (0x48-byte LE records, entry = menu id − 3
   Drawing" not proven.
 - Pathfinding exit-check rule (0x0016B18A) and the 2-tile step mode purpose.
 - AI (f13_062A, f8_0A5E, f8_1084) not documented yet.
+
+## 12. Logic review 2026-11-13 (checked against the Mac binary)
+
+Detailed write-ups: `docs/SPEC_AI.md` (computer player), `docs/SPEC_MECHANICS.md` (rules). Short list:
+
+- **Placement** `f6_0C30` (0x130C30), distance test 0x130B2A: per axis count of empty tiles between the
+  footprints; too near only when BOTH axes are below the margin. Hall vs gold mine margin 3; shore
+  building vs oil patch/platform margin 4, foundry exempt; platform needs an oil patch on its tile.
+- **SQM / tile-group flags** (`f8_4102`, masks at A5+1714, placement masks `f6_1116`): 0x01 land, 0x02
+  shallow (blocks land units and ships, only a docking ship enters), 0x10 coast (walkable, not
+  buildable), 0x40 water, 0x80 obstacle. Movement masks: land 0x09CE, air 0x0200, ship 0x0903,
+  docking ship 0x0901. Placement: normal 0x09DE, shore 0x0911 (+ at least one 0x02 tile), platform
+  0x0913. The low byte of our tileset group flags equals SQM on all 68 maps.
+- **UNIT record** `f8_3EDE`: byte 6 = parameter, byte 7 padding. Mine/oil: (param ? param : 120) x 2500.
+  Other units with param != 0 are passive (unit+0x5F bit 1): out of the AI force counters and wave
+  picks; a passive combat unit of a computer player guards its spot.
+- **PUD sections** processed in a fixed order from the table at A5+0x826 (TYPE VER DESC OWNR ERA DIM
+  UDTA UGRD ALOW SIDE SGLD SLBR SOIL AIPL, then MTXM SQM OILM REGM UNIT); no ERAX row.
+  Multiplayer list: 28 maps, War Data entries 220..247 (`f6_6300`).
+- **Training completion** `f4_40B2`: no free spot or full unit pool -> message, 100 % refund, production
+  ends; per-player production counter A5+6DB6.
+- **Cancel construction** `f13_4452`: 75 % of gold and lumber, no oil.
+- **Repair** `f6_2CC8`: +4 HP per step; a counter on the repaired unit (+0x84) shared by all repairers;
+  every 2nd step costs 1 gold + 1 lumber; stops when either is < 1. Step rate: animation-driven (open).
+- **Attack hit event** (opcode 0x0B -> 0x1201CC -> 0x16CAAA -> 0x12016A): no range test.
+- **Splash** `SplashDamageUnit` 0x129C54: m = max(dx^2, dy^2) to the unit centre, full <= 0x1FF,
+  quarter < 0x700, skips the missile's own shooter.
+- **No slot-reuse protection** in the original (raw pointers; `DamageUnit` 0x132148 checks only
+  +0x1E & 0xF). Ours keeps a slot generation (`unit_gen`).
+- **AI programs**: War Data entry 277 (resource 1277, 9237 bytes), same little-endian layout as DOS.
+  Interpreter stepped every cycle (`AI_PlayersTick` 0x13C3D4, step 0x13C28E); opcodes 0 set field
+  (3 B), 1 jump abs16 (3 B), 2 sleep u32 (5 B), 3 wait condition (2 B, counter = 1). Conditions 0..7:
+  shipyard, keep, castle (u16 counters), workers, land/sea/air force >= size x count, enemy has
+  workers. Field ids = byte offsets in the 0x34-byte AI record (9..34, see SPEC_AI). Attack triggers
+  handled every 50 cycles (`AI_Tick50a` 0x140A5E); target = the human player with most units; with
+  no human player the original never attacks (ours keeps its own target choice).

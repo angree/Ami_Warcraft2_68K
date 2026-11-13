@@ -23,3 +23,9 @@ __pycache__/
 /native/cgx-include/
 # agent tooling (local only)
 .claude/
+
+# archives never belong in the repo (and nothing that is not ours)
+*.tgz
+*.tar.gz
+*.tar
+

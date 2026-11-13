@@ -11,6 +11,7 @@
 #include "pud.h"
 #include "assets.h"
 #include "economy.h"
+#include "unit.h"
 
 /* ------------------------------------------------------------------------------------------- */
 /* module-private state                                                                         */
@@ -24,6 +25,8 @@ static uint8_t  g_fails[W2_MAX_UNITS];          /* path failures while looking f
 /* per building */
 static uint16_t g_builder[W2_MAX_UNITS];        /* worker inside a construction site */
 static uint8_t  g_inside[W2_MAX_UNITS];         /* workers inside a gold mine / at an oil platform */
+static uint8_t  g_rep_cnt[W2_MAX_UNITS];        /* repair steps on this (repaired) unit, mod 2 */
+static uint16_t g_rep_gen[W2_MAX_UNITS];        /* unit_gen of the slot g_rep_cnt belongs to */
 
 /* trees: special one-tree / stump tiles that have no MTXM value (drawn megatile set directly) */
 enum { SP_NONE, SP_BOT, SP_TOP, SP_MID, SP_STUMP };
@@ -61,6 +64,8 @@ void econ_reset(void)
 	memset(g_inside, 0, sizeof g_inside);
 	memset(g_special, 0, sizeof g_special);
 	memset(g_key_ok, 0, sizeof g_key_ok);
+	memset(g_rep_cnt, 0, sizeof g_rep_cnt);
+	memset(g_rep_gen, 0, sizeof g_rep_gen);
 	g_owned_stamp = 0;
 	g_last_cycle = w2.cycle;
 }
@@ -915,14 +920,17 @@ static int tile_class(unsigned v)
 	return TC_OTHER;
 }
 
-/* distance between footprints as the building rules measure it ("> 3" = farther than 3) */
-static int too_near(int ax, int ay, int aw, int ah, int b)
+/* Mac rule (placement check at 0x130B2A): per-axis rectangle margin. On each axis the gap is the
+ * number of empty tiles between the two footprints (negative when they overlap); the pair is too
+ * near only when BOTH gaps are below the margin (town hall vs gold mine 3, shore building vs oil
+ * patch / platform 4). */
+static int too_near(int ax, int ay, int aw, int ah, int b, int margin)
 {
 	const w2_unit_type *t = T(b);
-	int dx, dy, bx = w2.unit[b].tx, by = w2.unit[b].ty;
-	if (ax + aw <= bx) dx = bx - ax - aw + 1; else { dx = ax - bx - t->tile_w + 1; if (dx < 0) dx = 0; }
-	if (ay + ah <= by) dy = by - ay - ah + 1; else { dy = ay - by - t->tile_h + 1; if (dy < 0) dy = 0; }
-	return dx * dx + dy * dy < 16;      /* isqrt(d2) <= 3 */
+	int bx = w2.unit[b].tx, by = w2.unit[b].ty;
+	int gx = bx < ax ? ax - (bx + t->tile_w) : bx - (ax + aw);
+	int gy = by < ay ? ay - (by + t->tile_h) : by - (ay + ah);
+	return gx < margin && gy < margin;
 }
 
 static int oil_patch_at(int tx, int ty)
@@ -965,13 +973,14 @@ int econ_place_reason(int player, int type, int tx, int ty, int builder)
 		}
 	if (shore && !coastal) return 392;
 
-	for (s = 0; s < w2.unit_hi; s++) {
-		const w2_unit_type *o;
-		if (!alive(s)) continue;
-		o = T(s);
-		if ((t->store & W2_STORE_GOLD) && (o->flags & W2UF_GOLD_MINE) && too_near(tx, ty, w, h, s)) return 395;
-		if (shore && (t->store & W2_STORE_OIL) && (o->flags & (W2UF_OIL_PATCH | W2UF_OIL_PLATFORM)) && too_near(tx, ty, w, h, s))
-			return 396;
+	/* Mac: the town hall tiers (STORE_HALL flag) keep 3 tiles from gold mines; every shore building
+	 * (shipyard, refinery) keeps 4 from oil patches and platforms, the foundry excepted */
+	if (t->flags & W2UF_STORE_HALL) {
+		for (s = 0; s < w2.unit_hi; s++)
+			if (alive(s) && (T(s)->flags & W2UF_GOLD_MINE) && too_near(tx, ty, w, h, s, 3)) return 395;
+	} else if (shore && type != W2U_HUMAN_FOUNDRY && type != W2U_ORC_FOUNDRY) {
+		for (s = 0; s < w2.unit_hi; s++)
+			if (alive(s) && (T(s)->flags & (W2UF_OIL_PATCH | W2UF_OIL_PLATFORM)) && too_near(tx, ty, w, h, s, 4)) return 396;
 	}
 	return 0;
 }
@@ -1186,16 +1195,18 @@ void ord_train(int b)
 	if (u->progress < total) { u->progress++; return; }
 	if (!unit_thinks(b)) return;
 	bt = T(b);
-	/* spawn at the free tile nearest to the bottom middle of the building */
-	if (!find_spot(t->kind, u->tx, u->ty, bt->tile_w, bt->tile_h, u->tx + bt->tile_w / 2, u->ty + bt->tile_h, &x, &y)) return;
-	n = unit_create(u->queue_type, u->owner, x, y);
-	if (n < 0) return;
+	/* spawn at the free tile nearest to the bottom middle of the building. Mac (0x1240B2): when no
+	 * tile is free or the unit pool is full the production ends and the full cost comes back. */
+	n = -1;
+	if (find_spot(t->kind, u->tx, u->ty, bt->tile_w, bt->tile_h, u->tx + bt->tile_w / 2, u->ty + bt->tile_h, &x, &y))
+		n = unit_create(u->queue_type, u->owner, x, y);
+	if (n < 0) refund_pct(u->owner, t->gold, t->wood, t->oil, 100);
 	unit_set_order(b, W2_ORD_STILL, W2_NO_UNIT, 0, 0);
 	u->progress = 0;
 	unit_set_anim(b, W2_ANIM_STILL);
 	g_owned_stamp = 0;
 	econ_recount(u->owner);
-	snd_unit(n, 2);
+	if (n >= 0) snd_unit(n, 2);
 }
 
 void cmd_research(int bslot, int upg)
@@ -1305,7 +1316,7 @@ void cmd_cancel(int b)
 		const w2_unit_type *t = T(b);
 		int tx = u->tx, ty = u->ty, plat = (t->flags & W2UF_OIL_PLATFORM) != 0, owner = u->owner;
 		uint32_t left = u->res_left;
-		refund_pct(u->owner, t->gold, t->wood, t->oil, 75);
+		refund_pct(u->owner, t->gold, t->wood, 0, 75);   /* Mac 0x16C452: 3/4 of gold and wood, no oil */
 		g_builder[b] = W2_NO_UNIT;
 		unit_remove(b);
 		if (plat) {
@@ -1341,7 +1352,10 @@ void cmd_cancel(int b)
 /* repair                                                                                       */
 
 #define REPAIR_PERIOD 6     /* cycles per repair step (one W2 time unit) - NIEPEWNE */
-#define REPAIR_HP     4     /* hp per step, costs 1 gold (+1 wood, +1 oil if the type costs them) */
+#define REPAIR_HP     4     /* hp per step (Mac f6_2CC8 = 0x132CC8 repair step) */
+
+/* Mac: a counter on the REPAIRED unit (shared by all its repairers) - every second step costs
+ * 1 gold + 1 wood, whatever the type costs; never oil. Slot generation guards a reused slot. */
 
 static int repairable(int s, int t)
 {
@@ -1364,7 +1378,7 @@ void cmd_repair(int slot, int target)
 void ord_repair(int s)
 {
 	W2Unit *u = &w2.unit[s];
-	int t = u->target, r, g, w, o;
+	int t = u->target, r;
 	const w2_unit_type *tt;
 	check_reset();
 	if (!alive(s)) return;
@@ -1381,9 +1395,14 @@ void ord_repair(int s)
 	set_anim(s, W2_ANIM_REPAIR);
 	if (++u->timer < REPAIR_PERIOD) return;
 	u->timer = 0;
-	g = tt->gold ? 1 : 0; w = tt->wood ? 1 : 0; o = tt->oil ? 1 : 0;
-	if (!econ_can_afford(u->owner, g, w, o)) { msg_cost(u->owner, g, w, o); go_still(s); return; }
-	econ_pay(u->owner, g, w, o);
+	/* Mac: the step needs at least 1 gold and 1 wood in stock (lumber message first) */
+	if (!econ_can_afford(u->owner, 1, 1, 0)) {
+		msg_cost(u->owner, w2.player[u->owner].wood < 1 ? 0 : 1, 1, 0);
+		go_still(s);
+		return;
+	}
+	if (g_rep_gen[t] != unit_gen(t)) { g_rep_gen[t] = unit_gen(t); g_rep_cnt[t] = 0; }
+	if (++g_rep_cnt[t] > 1) { g_rep_cnt[t] -= 2; econ_pay(u->owner, 1, 1, 0); }
 	r = w2.unit[t].hp + REPAIR_HP;
 	w2.unit[t].hp = (uint16_t)(r > tt->hp ? tt->hp : r);
 	if (w2.unit[t].hp >= tt->hp) go_still(s);

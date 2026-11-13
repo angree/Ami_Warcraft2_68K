@@ -21,9 +21,13 @@ typedef struct AiInfo {
 	int home_tx, home_ty;
 	int target_tx, target_ty;   /* current attack target, -1 none */
 	int threat;                 /* slot of the enemy being defended against, -1 none */
+	int prog;                   /* 1 = run by its profile program (aiprog.c), 0 = the fixed plan */
+	int profile;                /* PUD AIPL profile of the program, -1 none */
+	int prog_pc;                /* program position (offset in War Data 277) */
 } AiInfo;
 
 void ai_set_log(int on);                       /* decision log via w2_log (default: w2.cfg ai_log=1) */
+/* w2.cfg ai_programs=0: never run the profile programs (War Data 277), always the fixed plan */
 void ai_think_now(int player);                 /* run one full think for this player immediately */
 void ai_get_info(int player, AiInfo *out);
 /* Scan the world for this player (what a think does first) without deciding anything; needed before

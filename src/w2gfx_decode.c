@@ -404,7 +404,7 @@ const unsigned char *w2_pud_section(const unsigned char *pud, unsigned long size
     while (p + 8 <= size) {
         unsigned long n = W2_LE32(pud + p + 4);
         if (memcmp(pud + p, tag, 4) == 0) {
-            if (p + 8 + n > size)
+            if (n > size - p - 8)          /* overflow-safe: p + 8 <= size holds here */
                 return NULL;
             if (len)
                 *len = n;

@@ -4,6 +4,7 @@
 #include "w2.h"
 #include "assets.h"
 #include "combat.h"
+#include "unit.h"
 
 typedef struct Missile {
 	uint8_t  used, type, cls, anim_n;   /* anim_n: animation frames (frames/5 for 9-dir sprites) */
@@ -40,6 +41,9 @@ static int missile_speed(int type)
 }
 
 static Missile g_m[W2_MAX_MISSILES];
+/* identity of the stored shooter / target slots (unit_gen at launch): a unit that dies during the
+ * flight and a newcomer in its slot must not be hit or credited (unit_same at impact) */
+static uint16_t g_sgen[W2_MAX_MISSILES], g_tgen[W2_MAX_MISSILES];
 static int g_hi;                       /* highest used index + 1 */
 static int g_count;
 
@@ -130,11 +134,13 @@ static void launch(int shooter, int type, int sx, int sy, int dx, int dy, int ta
 	if (!m) return;
 	if (shooter >= 0 && shooter < W2_MAX_UNITS && (w2.unit[shooter].flags & W2_UF_ALIVE)) {
 		m->shooter = (int16_t)shooter;
+		g_sgen[m - g_m] = unit_gen(shooter);
 		m->stype = w2.unit[shooter].type; m->sowner = w2.unit[shooter].owner;
 	}
 	if (tvalid) {
 		const w2_unit_type *t = w2_unit(w2.unit[target].type);
 		m->target = (uint16_t)target;
+		g_tgen[m - g_m] = unit_gen(target);
 		m->layer = (uint8_t)(t && t->kind == W2_KIND_AIR ? W2_TGT_AIR : (W2_TGT_LAND | W2_TGT_SEA));
 	} else m->layer = W2_TGT_LAND | W2_TGT_SEA;
 	if (fixed > 0) {
@@ -168,12 +174,11 @@ static void impact(Missile *m)
 {
 	const w2_missile *d = &w2_missiles[m->type];
 	int attacker = -1, x = m->x1, y = m->y1;
-	if (m->shooter >= 0) {
-		const W2Unit *s = &w2.unit[m->shooter];
-		if ((s->flags & W2_UF_ALIVE) && s->type == m->stype && s->owner == m->sowner) attacker = m->shooter;
-	}
+	int mi = (int)(m - g_m);
+	/* shooter / target by (slot, generation): a newcomer in a reused slot is neither credited nor hit */
+	if (m->shooter >= 0 && unit_same(m->shooter, g_sgen[mi])) attacker = m->shooter;
 	if (m->mode == DM_DIRECT && m->target != W2_NO_UNIT) {
-		if (m->dmg) unit_damage(m->target, m->dmg, attacker);   /* unit_damage ignores dead targets */
+		if (m->dmg && unit_same(m->target, g_tgen[mi])) unit_damage(m->target, m->dmg, attacker);
 	} else if (m->mode == DM_AREA || m->mode == DM_AREA_FIXED) {
 		combat_area_damage(x, y, m->dmg, attacker, m->layer, m->mode == DM_AREA_FIXED);
 	}

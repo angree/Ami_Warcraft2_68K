@@ -326,7 +326,7 @@ static void finish_target(int s)
 	int old = u->target, nt = -1, res = c_resume[s] && c_rtag[s] == old;
 	if (!(ty(s)->xflags & W2UX_COWARD) && (res || u->order == W2_ORD_ATTACK)) nt = combat_acquire(s);
 	if (nt >= 0 && nt != old) {
-		u->target = (uint16_t)nt;
+		unit_set_target(s, nt);
 		if (res) c_rtag[s] = (uint16_t)nt;
 		c_fail[s] = 0;
 		return;
@@ -352,7 +352,8 @@ static void attack_core(int s, int ground)
 	int valid, d, maxr, b, p, step, atk;
 
 	if (!combat_can_attack(s)) { leave_attack_anim(s); unit_set_order(s, W2_ORD_STILL, W2_NO_UNIT, u->tx, u->ty); return; }
-	valid = ground ? 1 : (combat_can_target(s, target) && unit_owner_sees(u->owner, target));
+	/* the order target by identity (unit_target_same): not a newcomer that reused a dead target's slot */
+	valid = ground ? 1 : (unit_target_same(s) && combat_can_target(s, target) && unit_owner_sees(u->owner, target));
 	maxr = combat_weapon(s, &b, &p);
 	d = ground ? unit_dist_to_tile(s, gx, gy) : (valid ? unit_dist_tiles(s, target) : 0x7FFF);
 	atk = attack_step_index(s);
@@ -367,7 +368,9 @@ static void attack_core(int s, int ground)
 			c_last[s] = (uint8_t)step;
 			if (!c_struck[s] && ((ev & W2AF_ATTACK) || step >= atk)) {
 				c_struck[s] = 1;
-				if (valid && d <= maxr + 1) strike(s, target, gx, gy);
+				/* Mac Order_AttackHit 0x0012016A: no range test at the hit event (a target that stepped
+				 * away during the swing is still hit / shot at) */
+				if (valid) strike(s, target, gx, gy);
 			}
 			return;                          /* mid-swing: decide at the wrap */
 		}
@@ -538,7 +541,7 @@ void combat_area_damage(int px, int py, int rating, int attacker, int layer_mask
 				int c, j;
 				if (pass == 0) { if (!(layer_mask & (W2_TGT_LAND | W2_TGT_SEA))) continue; c = w2.map.occ_ground[y * w2.map.w + x]; }
 				else { if (!(layer_mask & W2_TGT_AIR)) continue; c = w2.map.occ_air[y * w2.map.w + x]; }
-				if (c == W2_NO_UNIT || !alive(c)) continue;
+				if (c == W2_NO_UNIT || c == attacker || !alive(c)) continue;   /* Mac 0x00129C54 skips the shooter */
 				for (j = 0; j < n && g_victims[j] != c; j++) ;
 				if (j < n || n >= (int)(sizeof g_victims / sizeof g_victims[0])) continue;
 				g_victims[n++] = (uint16_t)c;

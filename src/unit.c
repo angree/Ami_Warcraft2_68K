@@ -43,8 +43,39 @@ static void deselect(int slot)
 	w2.unit[slot].flags &= (uint16_t)~W2_UF_SELECTED;
 }
 
+/* generation of each slot: bumped whenever a slot is freed, so a stored (slot, gen) pair
+ * no longer matches a NEW unit that reuses the slot */
+static uint16_t a_gen[W2_MAX_UNITS];
+
+uint16_t unit_gen(int slot) { return (slot >= 0 && slot < W2_MAX_UNITS) ? a_gen[slot] : 0; }
+int unit_same(int slot, uint16_t gen) { return slot >= 0 && slot < W2_MAX_UNITS && a_gen[slot] == gen && (w2.unit[slot].flags & W2_UF_ALIVE); }
+
+/* generation of the order target, taken when the target is set (unit_set_order / unit_set_target);
+ * a_tslot = the target value it belongs to (a direct write of u->target re-syncs on the next check) */
+static uint16_t a_tslot[W2_MAX_UNITS], a_tgen[W2_MAX_UNITS];
+
+void unit_set_target(int slot, int target)
+{
+	uint16_t t = (uint16_t)(target < 0 || target >= W2_MAX_UNITS ? W2_NO_UNIT : target);
+	if (slot < 0 || slot >= W2_MAX_UNITS) return;
+	w2.unit[slot].target = t;
+	a_tslot[slot] = t;
+	a_tgen[slot] = t == W2_NO_UNIT ? 0 : a_gen[t];
+}
+
+int unit_target_same(int slot)
+{
+	unsigned t;
+	if (slot < 0 || slot >= W2_MAX_UNITS) return 0;
+	t = w2.unit[slot].target;
+	if (t >= W2_MAX_UNITS) return 0;
+	if (a_tslot[slot] != t) { a_tslot[slot] = (uint16_t)t; a_tgen[slot] = a_gen[t]; }
+	return a_gen[t] == a_tgen[slot] && (w2.unit[t].flags & W2_UF_ALIVE);
+}
+
 static void free_slot(int slot)
 {
+	a_gen[slot]++;
 	memset(&w2.unit[slot], 0, sizeof w2.unit[slot]);
 	a_flags[slot] = 0; a_ev[slot] = 0; a_px[slot] = 0;
 	while (w2.unit_hi > 0 && w2.unit[w2.unit_hi - 1].flags == 0) w2.unit_hi--;
@@ -117,6 +148,14 @@ int unit_create(int type, int owner, int tx, int ty)
 	if (owner < 0 || owner >= W2_MAX_PLAYERS) owner = W2_NEUTRAL;
 	if (type == W2U_GOLD_MINE || type == W2U_OIL_PATCH) owner = W2_NEUTRAL;
 	if (tx < 0 || ty < 0 || tx + t->tile_w > w2.map.w || ty + t->tile_h > w2.map.h) return -1;
+	/* a building takes its whole footprint or nothing: any tile held by another unit/building -> fail
+	 * (a builder going inside has already been unplaced by economy.c; air units use occ_air) */
+	if (t->kind == W2_KIND_BUILDING) {
+		int x, y, w = t->tile_w ? t->tile_w : 1, h = t->tile_h ? t->tile_h : 1;
+		for (y = ty; y < ty + h; y++)
+			for (x = tx; x < tx + w; x++)
+				if (w2.map.occ_ground[y * w2.map.w + x] != W2_NO_UNIT) return -1;
+	}
 	/* a freshly reset world (pud_load_mem memsets the units): drop the corpses of the old one */
 	if (w2.unit_hi == 0 && w2.cycle == 0) unit_corpses_clear();
 	for (slot = 0; slot < W2_MAX_UNITS; slot++) if (w2.unit[slot].flags == 0) break;
@@ -441,7 +480,7 @@ void unit_set_order(int slot, int order, int target, int tx, int ty)
 	if (!(u->flags & W2_UF_ALIVE)) return;   /* dying: nothing more to do */
 	u->order = (uint8_t)order;
 	u->order_state = 0;
-	u->target = (uint16_t)(target < 0 ? W2_NO_UNIT : target);
+	unit_set_target(slot, target);
 	u->goal_tx = (uint8_t)(tx < 0 ? 0 : tx);
 	u->goal_ty = (uint8_t)(ty < 0 ? 0 : ty);
 	u->timer = 0;

@@ -72,7 +72,7 @@ void missile_fire_dmg(int shooter, int missile_type, int sx, int sy, int dx, int
 /* splash damage of the original at a map pixel (missiles; usable by spells): rating = attack rating
  * min(255, basic'+piercing') (no armor); 7x7 tiles, by distance to each unit centre: <= ~22 px full,
  * <= ~42 px rating/4; then minus armor (unless ignore_armor) and the CalcDamage roll.
- * layer_mask = W2_TGT_* layers hit. */
+ * layer_mask = W2_TGT_* layers hit. The attacker itself is never hit (Mac SplashDamageUnit 0x00129C54). */
 void combat_area_damage(int px, int py, int rating, int attacker, int layer_mask, int ignore_armor);
 
 #endif

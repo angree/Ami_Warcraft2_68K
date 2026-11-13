@@ -11,7 +11,7 @@
 [ -z "${BASH_VERSION:-}" ] && exec bash "$0" "$@"   # build/w.sh runs scripts with sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="$ROOT/build/host"
+OUT="${W2_HOST_OUT:-$ROOT/build/host}"   # W2_HOST_OUT: own output dir for parallel builds
 OBJ="$OUT/obj"
 CC="${CC:-gcc}"
 TEST=0

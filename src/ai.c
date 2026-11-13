@@ -9,6 +9,13 @@
  *    growing size (attack-move to the nearest known enemy building, else an enemy start location),
  *    home defence (idle home army attacks enemies near home or whoever hurts our units there).
  *
+ * With the original's data present, each computer player runs its PUD AIPL profile program
+ * (aiprog.c, War Data 277) instead of the fixed plan for: worker target, build list (buildings,
+ * research, hall upgrades), unit counts per class, and when/how many units attack (one-shot
+ * land/sea/air triggers). Farms, worker jobs, hall rebuild/expansion, rally, defence and targets
+ * stay ours. No data / bad profile / w2.cfg ai_programs=0: the fixed plan above.
+ * Enemy units are seen only when visible to the player (or attacking one of its units).
+ *
  * Only the cmd_* command API and read-only world state are used. Each computer player thinks once
  * every AI_THINK_PERIOD cycles (players staggered); one think scans the unit array exactly once.
  * No allocation, no floats, randomness only through w2_rand().
@@ -20,6 +27,9 @@
 #include "w2.h"
 #include "w2cfg.h"
 #include "ai.h"
+#include "aiprog.h"
+#include "unit.h"
+#include "pud.h"
 
 /* m68k-amigaos-gcc 6.5 -O1 crashes (ivopts ICE) when these per-unit helpers are inlined into scan() */
 #define W2_AI_NOINLINE __attribute__((noinline))
@@ -51,6 +61,7 @@ typedef struct AiRace {
 	uint8_t bld[4];           /* B_* */
 	uint8_t melee, ranged, cavalry, siege;
 	uint8_t upg[8];           /* U_* */
+	uint8_t race_shipyard;
 } AiRace;
 
 static const AiRace ai_races[2] = {
@@ -58,12 +69,12 @@ static const AiRace ai_races[2] = {
 	  { W2U_HUMAN_BARRACKS, W2U_ELVEN_LUMBER_MILL, W2U_HUMAN_BLACKSMITH, W2U_STABLES },
 	  W2U_FOOTMAN, W2U_ARCHER, W2U_KNIGHT, W2U_BALLISTA,
 	  { W2UP_SWORD1, W2UP_SWORD2, W2UP_HUMAN_SHIELD1, W2UP_HUMAN_SHIELD2, W2UP_ARROW1, W2UP_ARROW2,
-	    W2UP_BALLISTA1, W2UP_BALLISTA2 } },
+	    W2UP_BALLISTA1, W2UP_BALLISTA2 }, W2U_HUMAN_SHIPYARD },
 	{ { 0, W2U_GREAT_HALL, W2U_STRONGHOLD, W2U_FORTRESS }, W2U_PIG_FARM, W2U_PEON,
 	  { W2U_ORC_BARRACKS, W2U_TROLL_LUMBER_MILL, W2U_ORC_BLACKSMITH, W2U_OGRE_MOUND },
 	  W2U_GRUNT, W2U_AXETHROWER, W2U_OGRE, W2U_CATAPULT,
 	  { W2UP_BATTLE_AXE1, W2UP_BATTLE_AXE2, W2UP_ORC_SHIELD1, W2UP_ORC_SHIELD2, W2UP_THROWING_AXE1,
-	    W2UP_THROWING_AXE2, W2UP_CATAPULT1, W2UP_CATAPULT2 } },
+	    W2UP_THROWING_AXE2, W2UP_CATAPULT1, W2UP_CATAPULT2 }, W2U_ORC_SHIPYARD },
 };
 
 /* ---- build order (land attack). Steps are re-evaluated from the top on every think, so a lost
@@ -107,6 +118,8 @@ typedef struct AiState {
 	uint8_t wave, wave_extra;
 	uint8_t visited;            /* bit q: enemy q's start location was visited and found empty */
 	uint8_t site_fail;
+	uint8_t prog;               /* 1 = driven by its profile program (aiprog.c) */
+	uint32_t prog_cycle;        /* game cycle the program was last advanced to */
 	int16_t home_tx, home_ty;
 	int16_t att_tx, att_ty;     /* -1: no attack target */
 	int16_t tree_tx, tree_ty;   /* cached wood tile, -1 none */
@@ -115,11 +128,14 @@ typedef struct AiState {
 } AiState;
 
 static AiState  ai_st[AI_MAX_P];
-static uint16_t ai_key[W2_MAX_UNITS];   /* 0x8000 | owner << 8 | type: detects slot reuse */
+static uint16_t ai_gen[W2_MAX_UNITS];   /* unit_gen() of the unit the per-slot data below belongs to */
+static uint8_t  ai_own[W2_MAX_UNITS];   /* its owner + 1 (0 = nothing recorded) */
 static uint16_t ai_hp[W2_MAX_UNITS];    /* hp at the owner's last think */
 static uint8_t  ai_role[W2_MAX_UNITS];
 static uint8_t  ai_retry[W2_MAX_UNITS];
 static int      g_log;
+static int      g_prog_on = 1;          /* w2.cfg ai_programs=0: always the fixed plan */
+static uint8_t  ai_isprod[W2_NUM_UNIT_TYPES];   /* building trains one of the program's unit classes */
 
 /* ---- per-think scan results (static: small stack) ------------------------------------------- */
 static uint16_t s_done[W2_NUM_UNIT_TYPES];   /* complete units / buildings of each type */
@@ -132,7 +148,11 @@ static uint16_t s_army[AI_MAX_ARMY];  static int s_narmy;
 static uint16_t s_enemy[AI_MAX_ENEMY]; static int s_nenemy;
 static uint16_t s_mine[AI_MAX_MINE];  static int s_nmine;
 static uint16_t s_hurt[AI_MAX_HURT];  static int s_nhurt;
-static uint16_t s_prod[AI_MAX_PROD];  static int s_nprod;
+static uint16_t s_prod[AI_MAX_PROD];  static int s_nprod;    /* idle barracks */
+static uint16_t s_prodx[AI_MAX_PROD]; static int s_nprodx;   /* idle producers of any program class */
+static uint16_t s_navy[AI_MAX_PROD * 2]; static int s_nnavy; /* own attack-capable ships */
+static uint16_t s_land, s_sea, s_air;  /* complete attack units per domain (the program's conditions) */
+static uint16_t s_ewk;                 /* bit q: enemy q has a worker */
 static uint16_t s_alive[W2_MAX_PLAYERS];
 static uint16_t s_halls[8]; static int s_nhalls;
 static int s_p, s_hall, s_hall_tier, s_upgrading, s_main_mine;
@@ -186,7 +206,15 @@ static int hall_tier_of(int type)
 	return 0;
 }
 
-static int researched(int p, int upg) { return upg < 32 && ((w2.player[p].upgrades >> upg) & 1u); }
+/* same storage rule as economy.c (bits for 0..31, upgrade_level[] above; free spells always known);
+ * read directly so the AI test can link without economy.c */
+static int researched(int p, int upg)
+{
+	if (upg < 0 || upg >= (int)W2_NUM_UPGRADES) return 0;
+	if (w2_upgrades[upg].researched_at == W2_NONE) return 1;
+	if (upg < 32) return (w2.player[p].upgrades >> upg) & 1u;
+	return w2.player[p].upgrade_level[upg - 32] != 0;
+}
 static int researching(int upg) { return (s_research[upg >> 5] >> (upg & 31)) & 1u; }
 
 static int pend_count(int type)
@@ -249,6 +277,7 @@ static void scan_own_building(int i, const W2Unit *u, const w2_unit_type *t, con
 		if (is_idle(u)) {
 			if (s_idle[u->type] < 0) s_idle[u->type] = (int16_t)i;
 			if (u->type == r->bld[B_BARRACKS] && s_nprod < AI_MAX_PROD) s_prod[s_nprod++] = (uint16_t)i;
+			if (ai_isprod[u->type] && s_nprodx < AI_MAX_PROD) s_prodx[s_nprodx++] = (uint16_t)i;
 		}
 	}
 }
@@ -267,13 +296,19 @@ static int worker_job(const W2Unit *u)
 
 static W2_AI_NOINLINE void scan_own(int p, int i, const W2Unit *u, const w2_unit_type *t, const AiRace *r)
 {
-	uint16_t key = (uint16_t)(0x8000u | ((unsigned)p << 8) | u->type);
-	if (ai_key[i] != key) { ai_key[i] = key; ai_hp[i] = u->hp; ai_role[i] = ROLE_HOME; ai_retry[i] = 0; }
+	/* a new unit in a reused slot (or a captured one) starts with fresh AI data, never an old role */
+	if (ai_own[i] != p + 1 || !unit_same(i, ai_gen[i])) {
+		ai_own[i] = (uint8_t)(p + 1); ai_gen[i] = unit_gen(i);
+		ai_hp[i] = u->hp; ai_role[i] = ROLE_HOME; ai_retry[i] = 0;
+	}
 	if (u->hp < ai_hp[i] && s_nhurt < AI_MAX_HURT) s_hurt[s_nhurt++] = (uint16_t)i;
 	ai_hp[i] = u->hp;
 	if (u->flags & W2_UF_BUILDING) { scan_own_building(i, u, t, r); return; }
-	s_done[u->type]++;
 	if (t->food < 0) s_food_used += -t->food;
+	/* a "passive" unit of the map (PUD UNIT parameter, Mac unit+0x5F bit 1) guards its own spot: not in
+	 * the AI's army (no waves, rally or defence orders) nor in the class / force counters (Mac f6_1358) */
+	if (!(t->flags & W2UF_WORKER) && pud_unit_passive(i)) return;
+	s_done[u->type]++;
 	if (t->flags & W2UF_WORKER) {
 		int job = worker_job(u);
 		if (job == J_GOLD) s_ngold++;
@@ -282,6 +317,14 @@ static W2_AI_NOINLINE void scan_own(int p, int i, const W2Unit *u, const w2_unit
 	} else if ((t->flags & W2UF_CAN_ATTACK) && (t->kind == W2_KIND_LAND || t->kind == W2_KIND_AIR) &&
 	           !(t->flags & W2UF_VOLATILE)) {
 		if (s_narmy < AI_MAX_ARMY) s_army[s_narmy++] = (uint16_t)i;
+	} else if ((t->flags & W2UF_CAN_ATTACK) && t->kind == W2_KIND_SEA && !(u->flags & W2_UF_INSIDE)) {
+		if (s_nnavy < AI_MAX_PROD * 2) s_navy[s_nnavy++] = (uint16_t)i;
+	}
+	/* the original's domain counters (Mac f6_1358): attack-capable, by movement class */
+	if ((t->flags & W2UF_CAN_ATTACK) && (t->flags & 0x1Fu)) {
+		if (t->flags & W2UF_SEA) s_sea++;
+		else if (t->flags & W2UF_AIR) s_air++;
+		else if (!(t->flags & W2UF_WORKER)) s_land++;
 	}
 }
 
@@ -293,9 +336,17 @@ static W2_AI_NOINLINE void scan_enemy(int p, int i, const W2Unit *u, int home_tx
 			d = udist_tile(i, home_tx, home_ty);
 			if (d < s_ebld_d) { s_ebld_d = d; s_ebld = i; }
 		}
-	} else if (!(u->flags & (W2_UF_INSIDE | W2_UF_HIDDEN)) && s_nenemy < AI_MAX_ENEMY &&
-	           udist_tile(i, home_tx, home_ty) <= AI_ENEMY_R) {
-		s_enemy[s_nenemy++] = (uint16_t)i;
+	} else {
+		const w2_unit_type *t = w2_unit(u->type);
+		if (t && (t->flags & W2UF_WORKER)) s_ewk |= (uint16_t)(1u << u->owner);
+		if (!(u->flags & (W2_UF_INSIDE | W2_UF_HIDDEN)) && s_nenemy < AI_MAX_ENEMY &&
+		    udist_tile(i, home_tx, home_ty) <= AI_ENEMY_R) {
+			/* only what this player sees now, or a unit that is attacking one of ours (it just hit us) */
+			int ix = u->ty * w2.map.w + u->tx, tg = u->target;
+			if (((w2.map.visible[ix] >> p) & 1u) ||
+			    (u->order == W2_ORD_ATTACK && tg < W2_MAX_UNITS && w2.unit[tg].owner == p))
+				s_enemy[s_nenemy++] = (uint16_t)i;
+		}
 	}
 }
 
@@ -336,6 +387,7 @@ static void scan(int p)
 	for (i = 0; i < (int)W2_NUM_UNIT_TYPES; i++) s_idle[i] = -1;
 	s_research[0] = s_research[1] = 0;
 	s_nwork = s_narmy = s_nenemy = s_nmine = s_nhurt = s_nprod = s_nhalls = 0;
+	s_nprodx = s_nnavy = 0; s_land = s_sea = s_air = 0; s_ewk = 0;
 	s_hall = -1; s_hall_tier = 0; s_upgrading = 0; s_main_mine = -1;
 	s_food_sup = s_food_used = 0; s_ebld = -1; s_ebld_d = 0x7FFF; s_ngold = s_nwood = 0;
 
@@ -627,6 +679,29 @@ static void try_research(int p, int upg)
 	ai_log(p, "research %s at #%d", g->name, b);
 }
 
+/* upgrade a hall of the previous tier to 'type' (keep / castle) */
+static void hall_upgrade(int p, int type)
+{
+	const w2_unit_type *t = w2_unit((unsigned)type);
+	/* the hall to upgrade is one of the previous tier (the home hall may be an expansion's
+	 * lower-tier hall, or already upgraded); cmd_upgrade_to refuses anything else silently */
+	int h = -1, i;
+	if (!t) return;
+	if (s_hall >= 0 && w2.unit[s_hall].type == t->upgrade_from && is_idle(&w2.unit[s_hall])) h = s_hall;
+	for (i = 0; h < 0 && i < w2.unit_hi; i++) {
+		const W2Unit *v = &w2.unit[i];
+		if ((v->flags & W2_UF_ALIVE) && !(v->flags & W2_UF_UNDERCONST) && v->owner == p &&
+		    v->type == t->upgrade_from && is_idle(v)) h = i;
+	}
+	if (h >= 0 && can_spend(t->gold, t->wood, t->oil, 1)) {
+		cmd_upgrade_to(h, type);
+		if (w2.unit[h].order == W2_ORD_UPGRADE_TO) {
+			spend(t->gold, t->wood, t->oil);
+			ai_log(p, "upgrade hall #%d -> %s", h, tname(type));
+		}
+	} else reserve(t->gold, t->wood, t->oil);
+}
+
 /* walk the build order; returns the worker target, *blocked = step index or -1 */
 static int run_build_order(int p, int *blocked)
 {
@@ -652,35 +727,64 @@ static int run_build_order(int p, int *blocked)
 			try_build(p, type, st->home_tx, st->home_ty, 1);
 			return wt;
 		}
-		case S_HALL: {
-			int type = r->hall[s->n];
-			const w2_unit_type *t = w2_unit((unsigned)type);
+		case S_HALL:
 			if (s_hall_tier >= s->n || s_upgrading) break;
-			if (!req_ok(p, type)) break;
+			if (!req_ok(p, r->hall[s->n])) break;
 			*blocked = k;
-			{
-				/* the hall to upgrade is one of the previous tier (the home hall may be an expansion's
-				 * lower-tier hall, or already upgraded); cmd_upgrade_to refuses anything else silently */
-				int h = -1, i;
-				if (s_hall >= 0 && w2.unit[s_hall].type == t->upgrade_from && is_idle(&w2.unit[s_hall])) h = s_hall;
-				for (i = 0; h < 0 && i < w2.unit_hi; i++) {
-					const W2Unit *v = &w2.unit[i];
-					if ((v->flags & W2_UF_ALIVE) && !(v->flags & W2_UF_UNDERCONST) && v->owner == p &&
-					    v->type == t->upgrade_from && is_idle(v)) h = i;
-				}
-				if (h >= 0 && can_spend(t->gold, t->wood, t->oil, 1)) {
-					cmd_upgrade_to(h, type);
-					if (w2.unit[h].order == W2_ORD_UPGRADE_TO) {
-						spend(t->gold, t->wood, t->oil);
-						ai_log(p, "upgrade hall #%d -> %s", h, tname(type));
-					}
-				} else reserve(t->gold, t->wood, t->oil);
-			}
+			hall_upgrade(p, r->hall[s->n]);
 			return wt;
-		}
 		}
 	}
 	return wt;
+}
+
+/* the program's build list (aiprog_build_list): entries are walked from the top like the original
+ * (Mac FUN_00152546): a building entry is met while the player owns as many of that building as the
+ * list has asked for so far (lost ones are rebuilt); the first unmet one that can be built now is
+ * ordered and blocks the rest; a research entry blocks until it is done. Not buildable by this AI
+ * (coast/oil buildings, a second town hall: the expansion rule does that) or not allowed: skipped. */
+static void run_prog_build(int p, int *blocked)
+{
+	static uint8_t need[W2_NUM_UNIT_TYPES];
+	AiState *st = &ai_st[p];
+	const AiRace *r = &ai_races[st->race];
+	const uint8_t *bl;
+	int k, n = aiprog_build_list(p, &bl);
+	*blocked = -1;
+	memset(need, 0, sizeof need);
+	for (k = 0; k < n; k++) {
+		int e = bl[k];
+		if (e < 0x80) {
+			int type = (e & 0xFE) | st->race, have;
+			const w2_unit_type *t = w2_unit((unsigned)type);
+			if (!t || !(t->flags & W2UF_BUILDING)) continue;
+			need[type]++;
+			if (hall_tier_of(type) == 1) {
+				if (need[type] > 1) continue;
+				have = s_nhalls + s_cons[r->hall[1]] + pend_count(r->hall[1]);
+			} else have = total_of(type);
+			if (have >= need[type]) continue;
+			if (t->flags & (W2UF_SHORE_BUILDING | W2UF_OIL_PLATFORM)) continue;
+			if (!req_ok(p, type)) continue;
+			*blocked = k;
+			try_build(p, type, st->home_tx, st->home_ty, 1);
+			return;
+		} else {
+			int upg = aiprog_research(e, st->race);
+			if (upg == -2 || upg == -3) {          /* town hall -> keep, keep -> castle */
+				int tier = -upg;
+				if (s_hall_tier >= tier) continue;
+				*blocked = k;
+				if (!s_upgrading && req_ok(p, r->hall[tier])) hall_upgrade(p, r->hall[tier]);
+				return;
+			}
+			if (upg < 0 || researched(p, upg)) continue;
+			if (!econ_allowed_upgrade(p, upg) && !researching(upg)) continue;   /* cannot: do not stall */
+			*blocked = k;
+			if (!researching(upg)) try_research(p, upg);
+			return;
+		}
+	}
 }
 
 static void economy(int p, int *wt_out)
@@ -716,8 +820,12 @@ static void economy(int p, int *wt_out)
 	if (food_free() + farm_soon < need && s_food_sup < 200 && pend_count(r->farm) + s_cons[r->farm] < 2)
 		try_build(p, r->farm, st->home_tx, st->home_ty, 1);
 
-	/* 4. build order (buildings, hall upgrades, research) */
-	wt = run_build_order(p, &blocked);
+	/* 4. build order (buildings, hall upgrades, research): the profile program's list and worker
+	 * target, else the fixed plan */
+	if (st->prog && aiprog_active(p)) {
+		run_prog_build(p, &blocked);
+		wt = aiprog_get(p, AIP_WORKERS);
+	} else wt = run_build_order(p, &blocked);
 	st->info.step = blocked;
 	*wt_out = wt;
 
@@ -739,6 +847,58 @@ static void economy(int p, int *wt_out)
 }
 
 /* ---- military --------------------------------------------------------------------------------- */
+/* the program's unit classes: field, trained type (human, orc), counted variant (human, orc) */
+typedef struct AiClass { uint8_t field, type[2], alt[2]; } AiClass;
+static const AiClass ai_classes[] = {
+	{ AIP_INFANTRY,    { W2U_FOOTMAN, W2U_GRUNT },                       { W2U_FOOTMAN, W2U_GRUNT } },
+	{ AIP_ARCHERS,     { W2U_ARCHER, W2U_AXETHROWER },                   { W2U_RANGER, W2U_BERSERKER } },
+	{ AIP_SIEGE,       { W2U_BALLISTA, W2U_CATAPULT },                   { W2U_BALLISTA, W2U_CATAPULT } },
+	{ AIP_CAVALRY,     { W2U_KNIGHT, W2U_OGRE },                         { W2U_PALADIN, W2U_OGRE_MAGE } },
+	{ AIP_TANKERS,     { W2U_HUMAN_OIL_TANKER, W2U_ORC_OIL_TANKER },     { W2U_HUMAN_OIL_TANKER, W2U_ORC_OIL_TANKER } },
+	{ AIP_DESTROYERS,  { W2U_HUMAN_DESTROYER, W2U_ORC_DESTROYER },       { W2U_HUMAN_DESTROYER, W2U_ORC_DESTROYER } },
+	{ AIP_TRANSPORTS,  { W2U_HUMAN_TRANSPORT, W2U_ORC_TRANSPORT },       { W2U_HUMAN_TRANSPORT, W2U_ORC_TRANSPORT } },
+	{ AIP_BATTLESHIPS, { W2U_BATTLESHIP, W2U_OGRE_JUGGERNAUGHT },        { W2U_BATTLESHIP, W2U_OGRE_JUGGERNAUGHT } },
+	{ AIP_SUBS,        { W2U_HUMAN_SUBMARINE, W2U_ORC_SUBMARINE },       { W2U_HUMAN_SUBMARINE, W2U_ORC_SUBMARINE } },
+	{ AIP_CASTERS,     { W2U_MAGE, W2U_DEATH_KNIGHT },                   { W2U_MAGE, W2U_DEATH_KNIGHT } },
+	{ AIP_FLYERS,      { W2U_BALLOON, W2U_ZEPPELIN },                    { W2U_BALLOON, W2U_ZEPPELIN } },
+	{ AIP_SAPPERS,     { W2U_DWARVES, W2U_GOBLIN_SAPPERS },              { W2U_DWARVES, W2U_GOBLIN_SAPPERS } },
+	{ AIP_DRAGONS,     { W2U_GRYPHON_RIDER, W2U_DRAGON },                { W2U_GRYPHON_RIDER, W2U_DRAGON } },
+};
+#define AI_NCLASSES ((int)(sizeof ai_classes / sizeof ai_classes[0]))
+
+static int class_have(const AiClass *c, int race)
+{
+	int a = c->type[race], b = c->alt[race];
+	return s_done[a] + s_train[a] + (b != a ? s_done[b] + s_train[b] : 0);
+}
+
+/* every idle producer trains the class furthest below the program's request (Mac: per-building AI
+ * compares the class counter with the field, FUN_001284d4..) */
+static void train_prog(int p)
+{
+	int race = ai_st[p].race, i, k;
+	for (i = 0; i < s_nprodx; i++) {
+		int b = s_prodx[i], best = -1, bdef = 0;
+		const w2_unit_type *t;
+		if (s_narmy >= AI_ARMY_CAP || food_free() <= 0) return;
+		for (k = 0; k < AI_NCLASSES; k++) {
+			const AiClass *c = &ai_classes[k];
+			int ty = c->type[race], def = aiprog_get(p, c->field) - class_have(c, race);
+			const w2_unit_type *tt = w2_unit((unsigned)ty);
+			if (def <= bdef || !tt || tt->built_by != w2.unit[b].type) continue;
+			if (!req_ok(p, ty) || !can_spend(tt->gold, tt->wood, tt->oil, 0)) continue;
+			bdef = def; best = ty;
+		}
+		if (best < 0) continue;
+		t = w2_unit((unsigned)best);
+		cmd_train(b, best);
+		if (w2.unit[b].order != W2_ORD_TRAIN) continue;
+		spend(t->gold, t->wood, t->oil);
+		s_train[best]++; s_food_used++;
+		ai_log(p, "train %s at #%d (program wants %d)", tname(best), b, bdef);
+	}
+}
+
 static void train_army(int p)
 {
 	const AiRace *r = &ai_races[ai_st[p].race];
@@ -815,6 +975,44 @@ static int find_threat(int p)
 	return best;
 }
 
+/* the program's one-shot attack triggers (Mac AI_Tick50a, every 50 cycles there): each sends 'count'
+ * groups of 'size' units of its domain that are not attacking yet, then the trigger is cleared. Kept
+ * while home is under threat (our addition: defence first). Returns the land/air units sent. */
+static int prog_waves(int p, int threat, int have_t, int tx, int ty)
+{
+	static const uint8_t trig[3] = { AIP_ATT_LAND, AIP_ATT_SEA, AIP_ATT_AIR };
+	static const char *const dname[3] = { "land", "sea", "air" };
+	AiState *st = &ai_st[p];
+	int d, sent = 0;
+	for (d = 0; d < 3; d++) {
+		int want, n = 0, i;
+		if (!aiprog_get(p, trig[d])) continue;
+		if (threat >= 0 && d != 1) continue;
+		aiprog_set(p, trig[d], 0);
+		want = aiprog_get(p, AIP_LAND_SIZE + 2 * d) * aiprog_get(p, AIP_LAND_CNT + 2 * d);
+		if (!have_t || want <= 0) { ai_log(p, "program %s attack: nothing to send (%d) / no target", dname[d], want); continue; }
+		if (d == 1) {
+			for (i = 0; i < s_nnavy && n < want; i++)
+				if (is_idle(&w2.unit[s_navy[i]])) { cmd_attack_move(s_navy[i], tx, ty); n++; }
+		} else {
+			for (i = 0; i < s_narmy && n < want; i++) {
+				int s = s_army[i];
+				const W2Unit *u = &w2.unit[s];
+				const w2_unit_type *t = w2_unit(u->type);
+				if (ai_role[s] != ROLE_HOME || !t || t->kind != (d == 0 ? W2_KIND_LAND : W2_KIND_AIR)) continue;
+				if (u->order == W2_ORD_ATTACK && u->target != W2_NO_UNIT) continue;   /* fighting at home */
+				ai_role[s] = ROLE_ATTACK; ai_retry[s] = 0;
+				cmd_attack_move(s, tx, ty);
+				n++;
+			}
+			sent += n;
+		}
+		ai_log(p, "WAVE %d (program, %s): %d of %d units attack-move -> %d,%d", st->wave + 1, dname[d], n, want, tx, ty);
+		if (n && d != 1) { st->wave++; st->att_tx = (int16_t)tx; st->att_ty = (int16_t)ty; }
+	}
+	return sent;
+}
+
 static void military(int p)
 {
 	AiState *st = &ai_st[p];
@@ -880,9 +1078,13 @@ static void military(int p)
 	for (i = 0; i < s_narmy; i++)
 		if (ai_role[s_army[i]] == ROLE_HOME && is_idle(&w2.unit[s_army[i]])) home_idle++;
 
-	/* launch a wave */
+	/* launch a wave: the program's attack triggers, else the fixed wave sizes */
 	need = ai_wave_size(st->wave) + st->wave_extra + wave_reserve(st->wave);
-	if (threat < 0 && have_t && home_idle >= need) {
+	if (st->prog && aiprog_active(p)) {
+		int n = prog_waves(p, threat, have_t, tx, ty);
+		attackers += n; home_idle -= n;
+		if (home_idle < 0) home_idle = 0;
+	} else if (threat < 0 && have_t && home_idle >= need) {
 		int keep = wave_reserve(st->wave), n = 0;
 		for (i = 0; i < s_narmy; i++) {
 			int s = s_army[i];
@@ -911,6 +1113,21 @@ static void military(int p)
 }
 
 /* ---- think ------------------------------------------------------------------------------------ */
+/* what the program's wait conditions look at, from this think's scan */
+static void prog_world(int p, AiProgWorld *w)
+{
+	const AiRace *r = &ai_races[ai_st[p].race];
+	int q;
+	w->shipyards = s_done[r->race_shipyard];
+	w->keeps = s_done[r->hall[2]];
+	w->castles = s_done[r->hall[3]];
+	w->workers = s_done[r->worker];
+	w->land = s_land; w->sea = s_sea; w->air = s_air;
+	w->enemy_worker = 0;
+	for (q = 0; q < AI_MAX_P; q++)
+		if (q != p && ((w2.player[p].enemies >> q) & 1u) && ((s_ewk >> q) & 1u)) w->enemy_worker = 1;
+}
+
 static void think(int p)
 {
 	AiState *st = &ai_st[p];
@@ -918,11 +1135,18 @@ static void think(int p)
 	int wt = 0;
 	if (w2.player[p].defeated) return;
 	scan(p);
+	if (st->prog && aiprog_active(p)) {
+		/* the original steps the program every cycle: replay the cycles since the last think */
+		AiProgWorld w;
+		prog_world(p, &w);
+		aiprog_run(p, w2.cycle - st->prog_cycle, &w);
+		st->prog_cycle = w2.cycle;
+	}
 	b_gold = w2.player[p].gold; b_wood = w2.player[p].wood; b_oil = w2.player[p].oil;
 	r_gold = r_wood = r_oil = 0;
 	check_pending(p);
 	economy(p, &wt);
-	train_army(p);
+	if (st->prog && aiprog_active(p)) train_prog(p); else train_army(p);
 	assign_workers(p);
 	military(p);
 	st->info.active = 1;
@@ -935,6 +1159,9 @@ static void think(int p)
 	st->info.hall_tier = s_hall_tier;
 	st->info.food_supply = s_food_sup; st->info.food_used = s_food_used;
 	st->info.home_tx = st->home_tx; st->info.home_ty = st->home_ty;
+	st->info.prog = st->prog && aiprog_active(p);
+	st->info.profile = st->info.prog ? aiprog_profile(p) : -1;
+	st->info.prog_pc = st->info.prog ? aiprog_pc(p) : 0;
 }
 
 static void init_player(int p)
@@ -960,20 +1187,38 @@ static void init_player(int p)
 }
 
 /* ---- public ----------------------------------------------------------------------------------- */
-void ai_set_log(int on) { g_log = on; }
+void ai_set_log(int on) { g_log = on; aiprog_set_trace(on); }
 
 void ai_init(void)
 {
 	int p;
+	int k;
 	g_log = w2cfg_extra_int("ai_log", 0);
-	memset(ai_key, 0, sizeof ai_key);
+	g_prog_on = w2cfg_extra_int("ai_programs", 1);
+	aiprog_set_trace(g_log);
+	memset(ai_own, 0, sizeof ai_own);
 	memset(ai_role, 0, sizeof ai_role);
 	memset(ai_retry, 0, sizeof ai_retry);
+	memset(ai_isprod, 0, sizeof ai_isprod);
+	for (k = 0; k < AI_NCLASSES; k++)
+		for (p = 0; p < 2; p++) {
+			const w2_unit_type *t = w2_unit(ai_classes[k].type[p]);
+			if (t && t->built_by < W2_NUM_UNIT_TYPES) ai_isprod[t->built_by] = 1;
+		}
 	for (p = 0; p < AI_MAX_P; p++) {
 		ai_st[p].active = 0;
+		aiprog_stop(p);
 		if (w2.player[p].control == W2_CTRL_COMPUTER) {
 			init_player(p);
 			ai_log(p, "init: %s at %d,%d", ai_st[p].race ? "orc" : "human", ai_st[p].home_tx, ai_st[p].home_ty);
+			if (g_prog_on) {
+				/* the profile program from the map's AIPL; its first step runs now, as in the original */
+				AiProgWorld w;
+				scan(p);
+				prog_world(p, &w);
+				ai_st[p].prog = (uint8_t)aiprog_start(p, w2.player[p].ai_type, &w);
+				ai_st[p].prog_cycle = w2.cycle;
+			}
 		}
 	}
 }
