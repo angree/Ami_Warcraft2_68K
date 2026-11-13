@@ -3,7 +3,7 @@
 #ifndef W2_VERSION_H
 #define W2_VERSION_H
 
-#define W2_VERSION "0.2.0"
+#define W2_VERSION "0.3.0"
 #define W2_NAME    "Warcraft II 68K"
 
 #endif

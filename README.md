@@ -7,7 +7,7 @@ The engine is our own code in plain C, written from scratch for the Amiga (chunk
 no FPU needed). **No game data is included and none is needed from us: the game runs on the files of
 your own Warcraft II CD**, which you convert once on a PC with the extractor below.
 
-This is an early version (0.2.0): custom games (skirmish) against computer opponents on the maps of
+This is an early version (0.3.0): custom games (skirmish) against computer opponents on the maps of
 the CD. See "What works" below. Data converted for 0.1.0 works unchanged.
 
 ## 1. Extract the data from your own CD (on a PC)
@@ -57,11 +57,13 @@ Requirements: 68020 or better (68040 / fast 68030 recommended), AGA, an RTG card
 Developed and tested with 2 MB chip + 64 MB fast RAM; the real minimum has not been measured yet.
 Your own maps (`.pud`) go into a drawer `maps` next to the program.
 
-## 3. What works in 0.2.0
+## 3. What works in 0.3.0
 
-- Custom game against 1–7 computer opponents on the built-in maps and the CD's custom maps; humans
-  and orcs; gold, lumber and oil; building, training, research and upgrades; land, sea and air
-  combat; fog of war; minimap; the original interface, sounds, unit voices and CD music.
+- Custom game against 1–7 computer opponents on the 28 built-in multiplayer maps and the CD's custom
+  maps; humans and orcs; gold, lumber and oil; building, training, research and upgrades; land, sea
+  and air combat; fog of war; minimap; the original interface, sounds, unit voices and CD music.
+- The computer players run the original AI programs from the game data (the profile each map gives
+  them: land, sea, air, passive, campaign), with the old built-in plan as a fallback.
 - In-game menu (F10 / Esc) with Options: sound and music volume, game speed, scroll speed — applied
   at once and saved.
 - 640x480 (AGA, RTG) and 320x240 (AGA, RTG, ECS Extra-Half-Brite) with the hardware mouse pointer.
@@ -69,9 +71,19 @@ Your own maps (`.pud`) go into a drawer `maps` next to the program.
   mode of the same width is used, e.g. 320x256; without one the bar is left out). "Show FPS" puts
   the frame rate into the bar when it is shown.
 
+New in 0.3.0: the original AI programs drive the computer players, and the computer only reacts to
+what it can see; game rules checked against the original and corrected — building distance from
+gold mines and oil, shallow water blocks land units and ships, coast is not buildable, gold mines
+with no amount set hold 300 000, units marked passive on the map stay home, a unit that cannot leave
+its building is refunded, a cancelled construction returns 75 % of gold and lumber (no oil), repair
+costs 1 gold + 1 lumber every second step, melee hits need no range check, splash damage spares the
+shooter; seven more multiplayer maps; missiles and attacks never hit a new unit that took a dead
+unit's place; sight upgrades (Scouting, Longbow) now reveal the fog.
+
 New in 0.2.0: the in-game Options page; gold mines and oil patches can be selected under the fog
 once explored ("Gold Left"); 320x240 on RTG with the Amiga bar no longer cuts off the bottom of the
 game; the frame counter goes into the title bar.
+
 - Not yet: the campaigns and their briefings, spells, transports, saving games, multiplayer.
   MorphOS is supported by design but has not been tested yet. Speed work (drawing only what changed)
   is still ahead, so 640x480 on AGA is slow on anything below a fast 68040/060; use 320x240 or RTG.
