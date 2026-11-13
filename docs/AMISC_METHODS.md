@@ -178,8 +178,11 @@ unit_thinks_now(u) = ((frame_now + u->index) % period) == 0;   // spread by unit
   attribution required). Rect variant converts sub-rectangles; width granularity 32 px.
 - Cost: 640x480 c2p ~110 ms of a ~145 ms frame (020/-80); 320x240 ~28 ms. 040/25 ~2800 px/ms,
   040/40 ~4500 px/ms -> 21 ms buys ~95 000 px, so **320x240 on AGA, 640x480 only on RTG**.
-- RTG path: no c2p at all (WritePixelArray-style blit). EHB dropped: would need all art requantised
-  to 64 colours on the user's machine, and at 320x240 c2p is no longer the bottleneck.
+- RTG path: no c2p at all (WritePixelArray-style blit).
+- EHB: dropped 2026-08-08, then brought back in AmiSC 0.8.5 (2026-10-24): `amiga_ehb.c`, EHB 320x240
+  6 planes on ECS, colours reserved for 3 players, gate mean <= 13 / p95 <= 25 / closest player pair
+  >= 50 (AmiSC LEFTOFF.md). AmiW2 does the 64-colour conversion in the PC converter instead
+  (`ehb-*.pack`, 8 player registers).
 
 ### 3.2 Dirty rectangles (`amiga/amisc_backend.cpp:108-235, 843-1091`)
 - Grid of **32x16 cells** (32 = c2p granularity), one byte per cell, no rectangle merging.
