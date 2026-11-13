@@ -198,6 +198,7 @@ void amigagfx_set_hide_system_pointer(int on);
 /* Set the text shown in the screen title bar (the wb_bar option). Safe before
  * the screen exists (stored, used at open) and live afterwards. */
 void amigagfx_set_screen_title(const char *title);
+int  amigagfx_bar_shown(void);   /* 1: the screen's title bar is visible (Amiga bar, or Workbench window) */
 
 /* The mouse pointer's three colours (registers 17-19 on our own 8-bit screen; also the title bar's
  * fill, pen 17): rgb9 = 3 x RGB, 0..255. Replaces the colours from the pointer preferences. */

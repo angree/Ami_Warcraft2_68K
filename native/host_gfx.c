@@ -545,6 +545,8 @@ void AmigaMemProbe(const char *label) { if (g_verbose) host_logf("mem probe %s",
 unsigned long AmigaFreeFastMem(void) { return 64UL << 20; }
 unsigned long AmigaLargestFastMem(void) { return 32UL << 20; }
 
+int amigagfx_bar_shown(void) { return 0; }
+
 void amigagfx_set_screen_title(const char *title)
 {
 	snprintf(g_title, sizeof g_title, "%s", title ? title : "");

@@ -241,6 +241,12 @@ static void draw_fps(int fps10)
 	amigagfx_blit(0, 0, bw, bh);
 }
 
+/* the screen's title bar is visible (Amiga bar option, or the Workbench window's screen) */
+static int fps_in_bar(void)
+{
+	return amigagfx_bar_shown();
+}
+
 /* ---------------------------------------------------------------- display */
 static int open_display(void)
 {
@@ -355,8 +361,13 @@ int w2_main(void)
 			fps10 = (int)((g_frames - f_fps) * 10000UL / (now - t_fps));
 			if (++nfps % 5 == 1) w2_log("frames %lu, %d.%d fps", g_frames, fps10 / 10, fps10 % 10);
 			t_fps = now; f_fps = g_frames;
+			if (w2_cfg.show_fps && fps_in_bar()) {          /* the Amiga bar is up: the counter goes there */
+				char t[64];
+				snprintf(t, sizeof t, W2_NAME " " W2_VERSION "   FPS %d.%d", fps10 / 10, fps10 % 10);
+				amigagfx_set_screen_title(t);
+			}
 		}
-		if (w2_cfg.show_fps) draw_fps(fps10);
+		if (w2_cfg.show_fps && !fps_in_bar()) draw_fps(fps10);
 		if (g_audio) AmigaAudio_MusicService();
 		w2_wait_tof();
 	}

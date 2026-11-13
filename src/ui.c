@@ -26,6 +26,8 @@
 #include "w2cfg.h"
 #include "amiga_gfx.h"
 #include "game.h"
+#include "snd.h"
+#include "unit.h"
 
 /* ------------------------------------------------------------------ layout (hires units) */
 #define PANEL_W      176
@@ -63,8 +65,17 @@ static const short g_res_x[3] = { 264, 352, 440 };    /* gold, lumber, oil widge
 #define GM_Y         152
 #define GM_W         176
 #define GM_H         176
-static const short g_gm_by[3] = { 204, 240, 276 };
+#define GM_N         4
+static const short g_gm_by[GM_N] = { 194, 224, 254, 284 };
 #define GM_BX        (GM_X + 24)
+/* Options page (g_menu == 2): 4 slider rows, then an OK button */
+#define OPT_N        4
+#define OPT_Y0       (GM_Y + 36)
+#define OPT_DY       30
+#define OPT_BX       (GM_X + 16)
+#define OPT_BW       144
+#define OPT_BH       8
+#define OPT_OK_Y     (GM_Y + 148)
 
 #define MSG_LINES    8          /* original: up to 8 lines at (186, 26 + n*line) */
 #define MSG_TTL      (10 * 30)   /* cycles */
@@ -316,7 +327,12 @@ static int unit_ok(int s)
 }
 static int is_own(int s) { return w2.unit[s].owner == me(); }
 static int is_bld(int s) { return (w2.unit[s].flags & W2_UF_BUILDING) != 0; }
-static int visible(int s) { return is_own(s) || unit_owner_sees(me(), s); }
+/* neutral buildings (gold mines, oil patches) stay selectable once explored, also under fog */
+static int visible(int s)
+{
+	if (is_own(s) || unit_owner_sees(me(), s)) return 1;
+	return w2.unit[s].owner == W2_NEUTRAL && is_bld(s) && unit_visible_local(s);
+}
 
 static int pick_unit(int px, int py)
 {
@@ -1127,22 +1143,56 @@ static void draw_menu_button(void)
 	text_c(FONT_GAME, g_menu_press ? FC_WHITE : FC_YELLOW, MENU_BX + MENU_BW / 2 + pressed * 2, MENU_BY + 4 + pressed * 2, "Menu (F10)");
 }
 
-static const char *const g_gm_label[3] = { "Return to Game (Esc)", "Quit to Menu (Q)", "Exit Program (X)" };
+static const char *const g_gm_label[GM_N] = { "Return to Game (Esc)", "Options (O)", "Quit to Menu (Q)", "Exit Program (X)" };
+static const char *const g_opt_label[OPT_N] = { "Sound Volume", "Music Volume", "Game Speed", "Scroll Speed" };
+static const char *const g_opt_short[OPT_N] = { "Sound", "Music", "Speed", "Scroll" };
+static int g_opt_drag = -1, g_opt_dirty;
+
+static int *opt_val(int i, int *lo, int *hi)
+{
+	*lo = 0; *hi = 100;
+	switch (i) {
+	case 0: return &w2_cfg.sfx_volume;
+	case 1: return &w2_cfg.music_volume;
+	case 2: *lo = 1; *hi = 5; return &w2_cfg.game_speed;
+	default: *lo = 1; *hi = 5; return &w2_cfg.scroll_speed;
+	}
+}
+
+static void gm_button(int x, int y, int i, const char *label)
+{
+	W2Frame f;
+	int pressed = g_gm_press == i && in_rect(g_mx, g_my, x, y, MENU_BW, MENU_BH);
+	if (g_art.widget && !w2_sprite_frame(g_art.widget, g_art.widget_n, pressed ? 5 : 4, &f))
+		draw_gfu(g_art.widget, g_art.widget_n, pressed ? 5 : 4, x - f.x, y - f.y, &g_full);
+	else bevel(x, y, MENU_BW, MENU_BH, pressed);
+	text_c(FONT_GAME, in_rect(g_mx, g_my, x, y, MENU_BW, MENU_BH) ? FC_WHITE : FC_YELLOW,
+	       x + MENU_BW / 2 + pressed * 2, y + 4 + pressed * 2, label);
+}
 
 static void draw_game_menu(void)
 {
 	int i;
-	W2Frame f;
 	draw_gfu(g_art.info, g_art.info_n, 1, GM_X, GM_Y, &g_full);
-	text_c(FONT_LARGE, FC_YELLOW, GM_X + GM_W / 2, GM_Y + 14, "Game Menu");
-	for (i = 0; i < 3; i++) {
-		int pressed = g_gm_press == i && in_rect(g_mx, g_my, GM_BX, g_gm_by[i], MENU_BW, MENU_BH);
-		if (g_art.widget && !w2_sprite_frame(g_art.widget, g_art.widget_n, pressed ? 5 : 4, &f))
-			draw_gfu(g_art.widget, g_art.widget_n, pressed ? 5 : 4, GM_BX - f.x, g_gm_by[i] - f.y, &g_full);
-		else bevel(GM_BX, g_gm_by[i], MENU_BW, MENU_BH, pressed);
-		text_c(FONT_GAME, in_rect(g_mx, g_my, GM_BX, g_gm_by[i], MENU_BW, MENU_BH) ? FC_WHITE : FC_YELLOW,
-		       GM_BX + MENU_BW / 2 + pressed * 2, g_gm_by[i] + 4 + pressed * 2, g_gm_label[i]);
+	if (g_menu == 2) {
+		static const char *const spd[5] = { "Slowest", "Slow", "Normal", "Fast", "Fastest" };
+		text_c(FONT_LARGE, FC_YELLOW, GM_X + GM_W / 2, GM_Y + 14, "Options");
+		for (i = 0; i < OPT_N; i++) {
+			int lo, hi, *v = opt_val(i, &lo, &hi), y = OPT_Y0 + i * OPT_DY, w;
+			char b[16];
+			if (i < 2) snprintf(b, sizeof b, "%d%%", *v); else snprintf(b, sizeof b, "%s", spd[(*v - 1) % 5]);
+			text(FONT_GAME, FC_YELLOW, OPT_BX, y, L ? g_opt_short[i] : g_opt_label[i]);   /* 3x5 font is wider */
+			text_r(FONT_GAME, FC_WHITE, OPT_BX + OPT_BW, y, b);
+			w = (OPT_BW - 4) * (*v - lo) / (hi - lo);
+			fill(OPT_BX, y + 13, OPT_BW, OPT_BH, PEN_BARBG);
+			if (w > 0) fill(OPT_BX + 2, y + 15, w, OPT_BH - 4, PEN_YELLOW);
+			bevel(OPT_BX, y + 13, OPT_BW, OPT_BH, 1);
+		}
+		gm_button(GM_BX, OPT_OK_Y, 0, "OK (Esc)");
+		return;
 	}
+	text_c(FONT_LARGE, FC_YELLOW, GM_X + GM_W / 2, GM_Y + 14, "Game Menu");
+	for (i = 0; i < GM_N; i++) gm_button(GM_BX, g_gm_by[i], i, g_gm_label[i]);
 }
 
 static void update_cursor(void)
@@ -1207,27 +1257,86 @@ static int key_char(int k)
 	return 0;
 }
 
+static void options_close(void)
+{
+	click_sound();
+	g_menu = 1; g_gm_press = -1; g_opt_drag = -1;
+	if (g_opt_dirty) {
+		g_opt_dirty = 0;
+		if (w2cfg_save(&w2_cfg, W2CFG_FILE)) w2_log("ui: could not write %s", W2CFG_FILE);
+		else w2_log("ui: options saved (sfx %d music %d speed %d scroll %d)", w2_cfg.sfx_volume,
+		            w2_cfg.music_volume, w2_cfg.game_speed, w2_cfg.scroll_speed);
+	}
+}
+
 static void menu_choose(int i)
 {
 	click_sound();
-	g_menu = 0; g_gm_press = -1;
-	if (i == 1) game_end(3);
-	else if (i == 2) { g_quit = 1; game_quit(); }
+	g_gm_press = -1;
+	if (i == 1) { g_menu = 2; g_opt_drag = -1; return; }
+	g_menu = 0;
+	if (i == 2) game_end(3);
+	else if (i == 3) { g_quit = 1; game_quit(); }
+}
+
+/* set slider row i from the mouse x; values apply at once (snd/main loop read w2_cfg live) */
+static void opt_set(int i)
+{
+	int lo, hi, *v = opt_val(i, &lo, &hi), nv, was = *v;
+	nv = lo + ((g_mx - OPT_BX - 2) * (hi - lo) + (OPT_BW - 4) / 2) / (OPT_BW - 4);
+	if (nv < lo) nv = lo;
+	if (nv > hi) nv = hi;
+	if (nv == was) return;
+	*v = nv; g_opt_dirty = 1;
+	if (i == 1 && was == 0 && nv > 0 && w2_cfg.music && !snd_music_active())
+		snd_music_play(SND_MUS_GAME, local_race());
+	if (i == 0 && hi == 100 && (nv / 10) != (was / 10)) click_sound();
+}
+
+static int opt_row_at(int x, int y)
+{
+	int i;
+	for (i = 0; i < OPT_N; i++)
+		if (in_rect(x, y, OPT_BX - 4, OPT_Y0 + i * OPT_DY + 9, OPT_BW + 8, OPT_BH + 8)) return i;
+	return -1;
+}
+
+static int opt_event(const AmigaGfxEvent *e)
+{
+	int r, on_ok = in_rect(g_mx, g_my, GM_BX, OPT_OK_Y, MENU_BW, MENU_BH);
+	if (e->type == AMIGAGFX_EV_KEY) {
+		int k = e->code & 0x7F, c = key_char(k);
+		if (e->code & 0x80) return 1;
+		if (k == K_ESC || k == K_F10 || c == 'o' || k == 0x44 /* Return */) options_close();
+		return 1;
+	}
+	if (e->type == AMIGAGFX_EV_MOUSEDOWN && e->code == AMIGAGFX_BUTTON_LEFT) {
+		if (on_ok) g_gm_press = 0;
+		else if ((r = opt_row_at(g_mx, g_my)) >= 0) { g_opt_drag = r; opt_set(r); }
+	} else if (e->type == AMIGAGFX_EV_MOUSEMOVE) {
+		if (g_opt_drag >= 0) opt_set(g_opt_drag);
+	} else if (e->type == AMIGAGFX_EV_MOUSEUP && e->code == AMIGAGFX_BUTTON_LEFT) {
+		if (g_gm_press == 0 && on_ok) options_close();
+		g_gm_press = -1; g_opt_drag = -1;
+	}
+	return 1;
 }
 
 static int gm_event(const AmigaGfxEvent *e)
 {
 	int i;
+	if (g_menu == 2) return opt_event(e);
 	if (e->type == AMIGAGFX_EV_KEY) {
 		int k = e->code & 0x7F, c = key_char(k);
 		if (e->code & 0x80) return 1;
 		if (k == K_ESC || k == K_F10 || c == 'r') menu_choose(0);
-		else if (c == 'q') menu_choose(1);
-		else if (c == 'x') menu_choose(2);
+		else if (c == 'o') menu_choose(1);
+		else if (c == 'q') menu_choose(2);
+		else if (c == 'x') menu_choose(3);
 		return 1;
 	}
-	for (i = 0; i < 3; i++) if (in_rect(g_mx, g_my, GM_BX, g_gm_by[i], MENU_BW, MENU_BH)) break;
-	if (e->type == AMIGAGFX_EV_MOUSEDOWN && e->code == AMIGAGFX_BUTTON_LEFT) g_gm_press = i < 3 ? i : -1;
+	for (i = 0; i < GM_N; i++) if (in_rect(g_mx, g_my, GM_BX, g_gm_by[i], MENU_BW, MENU_BH)) break;
+	if (e->type == AMIGAGFX_EV_MOUSEDOWN && e->code == AMIGAGFX_BUTTON_LEFT) g_gm_press = i < GM_N ? i : -1;
 	else if (e->type == AMIGAGFX_EV_MOUSEUP && e->code == AMIGAGFX_BUTTON_LEFT) {
 		if (g_gm_press >= 0 && g_gm_press == i) menu_choose(i);
 		g_gm_press = -1;

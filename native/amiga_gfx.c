@@ -510,6 +510,12 @@ static struct BitMap  *g_tempbm;
  * opens before the game names itself. */
 static UBYTE g_screen_title[80] = "Warcraft II 68K";
 
+/* the screen title bar is visible: our own screen opened with it, or the Workbench window */
+int amigagfx_bar_shown(void)
+{
+	return g_screen != NULL && (g_yoff > 0 || g_backend == AMIGAGFX_BACKEND_WB);
+}
+
 void amigagfx_set_screen_title(const char *t)
 {
 	if (t != NULL && *t != '\0') {
@@ -761,6 +767,23 @@ static ULONG rtg_best_mode(int w, int h)
 	if (GetCyberIDAttr(CYBRIDATTR_BPPIX, id) != 1UL) return (ULONG)INVALID_ID;
 
 	return id;
+}
+
+/* The lowest height in [minh, maxh] of an available RTG mode exactly w wide (any depth: the
+ * screen opener picks the depth itself and re-matches w x height exactly), else 0. */
+static int rtg_taller_height(int w, int minh, int maxh)
+{
+	ULONG id = (ULONG)INVALID_ID;
+	int guard = 0, best = 0;
+	if (!cgx_open()) return 0;
+	while ((id = NextDisplayInfo(id)) != (ULONG)INVALID_ID && guard++ < 1000) {
+		int mh;
+		if (!IsCyberModeID(id) || ModeNotAvailable(id) != 0) continue;
+		if (GetCyberIDAttr(CYBRIDATTR_WIDTH, id) != (ULONG)w) continue;
+		mh = (int)GetCyberIDAttr(CYBRIDATTR_HEIGHT, id);
+		if (mh >= minh && mh <= maxh && (!best || mh < best)) best = mh;
+	}
+	return best;
 }
 
 /* ---- RTG DEEP (0.8.6, z AmiFFE / AmiSC; I:\GITHUB\!instrukcje_kompilacji_68K_AROS_i_MorphOS\40) ----
@@ -1964,9 +1987,15 @@ int amigagfx_open(int w, int h, int show_bar, int backend)
 			/* RTG: a mode h + bar tall does not exist - the card would hand out the next bigger mode
 			 * (800x611 became 1024x768 with the game in its corner, user 2026-11-11). The chosen
 			 * mode stays exactly w x h; the game area gets what the bar leaves. */
-			if (prev == AMIGAGFX_BACKEND_RTG)
-				err = 1;
-			else
+			if (prev == AMIGAGFX_BACKEND_RTG) {
+				/* an EXACT taller mode of the same width (e.g. 320x256 for 320x240 + bar) is fine:
+				 * the game sits under the bar and the spare lines below stay black */
+				int th = rtg_taller_height(w, h + bar, h + bar + 64);
+				err = th > 0 ? open_screen_rtg(w, th, quiet, title) : 1;
+				if (err == 0 && g_screen != NULL && (int)g_screen->BarHeight + 1 + h > th) {
+					CloseScreen(g_screen); g_screen = NULL; err = 1;
+				}
+			} else
 				err = open_screen_aga(w, h + bar, quiet, title,
 				                      prev == AMIGAGFX_BACKEND_EHB ? DEPTH_EHB : DEPTH_AGA);
 			if (err == 0) {
@@ -1976,18 +2005,19 @@ int amigagfx_open(int w, int h, int show_bar, int backend)
 				fprintf(stdout, "amiga: wb bar: screen %dx%d, full game area %dx%d at y=%d\n",
 				        w, h + bar, g_width, g_height, g_yoff);
 			} else {
-				/* taller refused - reopen at the original height and reduce */
+				/* taller refused - the game's layout is a FIXED w x h and cannot shrink (a reduced
+				 * area cut the bottom off and the map could not scroll there, user 2026-11-13):
+				 * reopen at the original size WITHOUT the bar */
 				if (prev == AMIGAGFX_BACKEND_RTG)
-					err = open_screen_rtg(w, h, quiet, title);
+					err = open_screen_rtg(w, h, quiet, FALSE);
 				else
-					err = open_screen_aga(w, h, quiet, title,
+					err = open_screen_aga(w, h, quiet, FALSE,
 					                      prev == AMIGAGFX_BACKEND_EHB ? DEPTH_EHB : DEPTH_AGA);
 				if (err != 0) { amigagfx_close(); return err; }
-				bar = (int)g_screen->BarHeight + 1;
-				g_yoff   = bar;
-				g_height = h - bar;
-				fprintf(stdout, "amiga: wb bar: taller screen refused, reduced game area %dx%d at y=%d\n",
-				        g_width, g_height, g_yoff);
+				g_yoff   = 0;
+				g_height = h;
+				fprintf(stdout, "amiga: wb bar: no taller %dx%d+ screen - bar dropped, full game area %dx%d\n",
+				        w, h + bar, g_width, g_height);
 			}
 		} else {
 			fprintf(stdout, "amiga: wb bar height %d implausible for %d lines - bar ignored\n",

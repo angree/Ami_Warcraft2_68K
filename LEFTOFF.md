@@ -72,6 +72,11 @@ Do zrobienia przy integracji (zebrane z raportów):
 
 EMULATORY: tylko `C:\temp\amiga_w2\uae\winuae-w2.exe`; nigdy nie zamykać innych (użytkownik!).
 
+## WYDANIE 0.2.0 (2026-11-13)
+- tag v0.2.0, paczki w `_AmiW2-poza-repo\dist\release-0.2.0`. Nowe: strona Options w menu gry (ui.c, g_menu==2,
+  zapis do w2.cfg), neutralne budynki zaznaczalne pod mgla, RTG + pasek szuka wyzszego trybu tej samej szerokosci
+  (rtg_taller_height), inaczej bez paska (nigdy zmniejszony obszar gry), FPS w pasku (amigagfx_bar_shown).
+
 ## WYDANIE 0.1.0 (2026-11-13)
 - github.com/angree/Ami_Warcraft2_68K, tag v0.1.0: `Warcraft2_68K-0.1.0.lha` + `Warcraft2_68K-0.1.0-converter.zip` (`build/release.sh` przez `build/w.sh`; bramka `build/release-gate.py`; paczki w `_AmiW2-poza-repo\dist\release-0.1.0`). Licencja GPL v2.
 - EHB (ECS) działa: `src/ehb.c`, paczki `ehb-<era>.pack` z w2conv, 8 rejestrów na kolory graczy; sprawdzone w WinUAE (-70%, bez JIT) grą i menu. Zrzut z gościa (`snap`) pokazuje teraz połówki EHB poprawnie.

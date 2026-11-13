@@ -7,8 +7,8 @@ The engine is our own code in plain C, written from scratch for the Amiga (chunk
 no FPU needed). **No game data is included and none is needed from us: the game runs on the files of
 your own Warcraft II CD**, which you convert once on a PC with the extractor below.
 
-This is an early version (0.1.0): custom games (skirmish) against computer opponents on the maps of
-the CD. See "What works" at the end.
+This is an early version (0.2.0): custom games (skirmish) against computer opponents on the maps of
+the CD. See "What works" below. Data converted for 0.1.0 works unchanged.
 
 ## 1. Extract the data from your own CD (on a PC)
 
@@ -57,12 +57,21 @@ Requirements: 68020 or better (68040 / fast 68030 recommended), AGA, an RTG card
 Developed and tested with 2 MB chip + 64 MB fast RAM; the real minimum has not been measured yet.
 Your own maps (`.pud`) go into a drawer `maps` next to the program.
 
-## 3. What works in 0.1.0
+## 3. What works in 0.2.0
 
 - Custom game against 1–7 computer opponents on the built-in maps and the CD's custom maps; humans
   and orcs; gold, lumber and oil; building, training, research and upgrades; land, sea and air
   combat; fog of war; minimap; the original interface, sounds, unit voices and CD music.
+- In-game menu (F10 / Esc) with Options: sound and music volume, game speed, scroll speed — applied
+  at once and saved.
 - 640x480 (AGA, RTG) and 320x240 (AGA, RTG, ECS Extra-Half-Brite) with the hardware mouse pointer.
+- "Amiga bar": the game keeps its full area under the screen's title bar (on RTG a slightly taller
+  mode of the same width is used, e.g. 320x256; without one the bar is left out). "Show FPS" puts
+  the frame rate into the bar when it is shown.
+
+New in 0.2.0: the in-game Options page; gold mines and oil patches can be selected under the fog
+once explored ("Gold Left"); 320x240 on RTG with the Amiga bar no longer cuts off the bottom of the
+game; the frame counter goes into the title bar.
 - Not yet: the campaigns and their briefings, spells, transports, saving games, multiplayer.
   MorphOS is supported by design but has not been tested yet. Speed work (drawing only what changed)
   is still ahead, so 640x480 on AGA is slow on anything below a fast 68040/060; use 320x240 or RTG.
@@ -79,6 +88,20 @@ Warcraft II is a trademark of Blizzard Entertainment. This project is not affili
 by Blizzard. It contains no Blizzard code and no Blizzard data, and it is useless without an original
 copy of the game.
 
-The source is under the GNU General Public License version 2 (see `LICENSE`). The unit and upgrade
-tables were generated from the game facts documented by the Wargus project (GPL v2). The 3x5 font is
-CC0. The chunky-to-planar routines are by Mikael Kalms (public domain).
+The source is under the GNU General Public License version 2 (see `LICENSE`). The 3x5 font is CC0.
+The chunky-to-planar routines are by Mikael Kalms (public domain).
+
+## 6. What it is based on
+
+- **The original game itself.** How the game behaves (rules, timings, the interface layout, the AI's
+  habits) is taken from our own analysis of the Macintosh version's 68k program, used as a
+  specification only. None of its code is in this repository.
+- **[Wargus](https://github.com/Wargus/wargus)** on the **[Stratagus](https://github.com/Wargus/stratagus)**
+  engine (GPL v2), the open-source Warcraft II project. We read it as documentation, not as code to
+  reuse: its data extractor documents the archive and image formats, and its scripts document the
+  game facts (unit and upgrade costs, hit points, damage, ranges, build times, dependencies). Our unit
+  and upgrade tables were generated from those facts and checked against the original where they
+  differ. No Wargus or Stratagus source code is used; the engine is written from scratch.
+- **Our own Amiga ports**: the methods of the StarCraft port (logic spread over frames, the lores 2:1
+  mode, the 3x5 font, the hardware pointer, Smacker playback) and the platform layer and Workbench
+  configurator of the Europa Universalis II port.
