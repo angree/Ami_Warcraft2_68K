@@ -960,7 +960,7 @@ int econ_place_reason(int player, int type, int tx, int ty, int builder)
 				if (c == TC_SHORE) coastal = 1;
 				else if (c != TC_WATER) return 392;
 			} else {
-				if (c != TC_GRASS || (f & W2_TF_NOWALK)) return 391;
+				if (c != TC_GRASS || (f & (W2_TF_NOWALK | W2_TF_NOBUILD))) return 391;
 			}
 		}
 	if (shore && !coastal) return 392;
@@ -1303,7 +1303,7 @@ void cmd_cancel(int b)
 	}
 	if (u->flags & W2_UF_UNDERCONST) {
 		const w2_unit_type *t = T(b);
-		int tx = u->tx, ty = u->ty, plat = (t->flags & W2UF_OIL_PLATFORM) != 0;
+		int tx = u->tx, ty = u->ty, plat = (t->flags & W2UF_OIL_PLATFORM) != 0, owner = u->owner;
 		uint32_t left = u->res_left;
 		refund_pct(u->owner, t->gold, t->wood, t->oil, 75);
 		g_builder[b] = W2_NO_UNIT;
@@ -1314,7 +1314,7 @@ void cmd_cancel(int b)
 		}
 		/* the builder (still waiting in BD_INSIDE) sees the site gone and walks out */
 		g_owned_stamp = 0;
-		econ_recount(u->owner);
+		econ_recount(owner);                  /* u's slot is free now: its owner field is stale */
 		return;
 	}
 	switch (u->order) {

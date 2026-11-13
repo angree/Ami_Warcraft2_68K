@@ -178,7 +178,8 @@ void fog_update(void)
 		if (!(u->flags & W2_UF_ALIVE) || (u->flags & (W2_UF_INSIDE | W2_UF_HIDDEN)) || u->owner >= 8) continue;
 		t = w2_unit(u->type);
 		if (!t) continue;
-		r = t->sight;
+		r = econ_stat(slot, W2_STAT_SIGHT);      /* with researched bonuses (Scouting, Longbow) */
+		if (r <= 0) r = t->sight;                /* economy not linked (module tests) */
 		if (u->flags & W2_UF_UNDERCONST) r = 1;   /* NIEPEWNE: a site under construction sees its surroundings only */
 		if (r < 1) r = 1;
 		if (r > MAPDRAW_SIGHT_MAX) r = MAPDRAW_SIGHT_MAX;
