@@ -24,6 +24,7 @@
 #include "amiga_audio.h"
 #include "amiga_trap.h"
 #include "w2_sys.h"
+#include "amiga_uclock.h"
 #include "w2cfg.h"
 #include "version.h"
 #ifdef W2_HAVE_GAME
@@ -303,7 +304,8 @@ static int open_display(void)
 int w2_main(void)
 {
 	const char *cfgpath;
-	int rc = 0, fps10 = 0, nfps = 0;
+	int rc = 0, fps10 = 0, nfps = 0, w2_cfg_prof;
+	unsigned long u0, u1, u2, p_logic = 0, p_draw = 0, p_cyc = 0, p_drop = 0;
 	unsigned long t_tick, t_fps, f_fps;
 
 	remove(LOGFILE);                                   /* freopen("w") does not truncate here */
@@ -340,6 +342,7 @@ int w2_main(void)
 	w2_log("game_init ok, tick %lu ms", w2_tick_ms());
 	autoinput_load();
 
+	w2_cfg_prof = w2cfg_extra_int("profile", 0);
 	t_tick = t_fps = amigagfx_millis();
 	f_fps = 0;
 	while (!g_quit) {
@@ -352,14 +355,24 @@ int w2_main(void)
 		}
 		if (g_quit || game_wants_quit()) break;
 		now = amigagfx_millis();
+		u0 = amiga_uclock_us();
 		for (n = 0; now - t_tick >= w2_tick_ms() && n < 5; n++) { game_tick(); t_tick += w2_tick_ms(); }
-		if (now - t_tick >= w2_tick_ms()) t_tick = now;                 /* too far behind: drop the backlog */
+		if (now - t_tick >= w2_tick_ms()) { t_tick = now; p_drop++; }  /* too far behind: drop the backlog */
+		u1 = amiga_uclock_us();
 		if (game_draw(amigagfx_chunky(), amigagfx_pitch(), amigagfx_game_width(), amigagfx_game_height()))
 			amigagfx_blit(0, 0, amigagfx_game_width(), amigagfx_game_height());
+		u2 = amiga_uclock_us();
+		p_logic += u1 - u0; p_draw += u2 - u1; p_cyc += (unsigned long)n;
 		g_frames++;
 		if (now - t_fps >= 2000) {
 			fps10 = (int)((g_frames - f_fps) * 10000UL / (now - t_fps));
 			if (++nfps % 5 == 1) w2_log("frames %lu, %d.%d fps", g_frames, fps10 / 10, fps10 % 10);
+			if (w2_cfg_prof) {   /* profile=1: where the time of this 2 s window went */
+				unsigned long ms = now - t_fps;
+				w2_log("prof: %d.%d fps, logic %lu ms/s, draw %lu ms/s, %lu cycles/s, drops %lu",
+				       fps10 / 10, fps10 % 10, p_logic / ms, p_draw / ms, p_cyc * 1000UL / ms, p_drop);
+				p_logic = p_draw = p_cyc = p_drop = 0;
+			}
 			t_fps = now; f_fps = g_frames;
 			if (w2_cfg.show_fps && fps_in_bar()) {          /* the Amiga bar is up: the counter goes there */
 				char t[64];
