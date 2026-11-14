@@ -19,6 +19,7 @@
 #include <time.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include "cellcmp.h"
 #include "amiga_gfx.h"
 
 #ifdef HOST_SDL
@@ -35,6 +36,8 @@ void host_logf(const char *fmt, ...);
 
 /* ---- state -------------------------------------------------------------------------------- */
 static unsigned char *g_chunky, *g_disp;
+static unsigned char *g_shadow;   /* changed-cell blit: what the display shows (see amigagfx_blit_changed) */
+static int g_shadow_ok;
 static int g_w, g_h, g_gh, g_barh, g_open, g_backend = AMIGAGFX_BACKEND_AGA, g_video_mode;
 static unsigned char g_pal[256 * 3];
 static int g_verbose, g_ptr_x, g_ptr_y;
@@ -605,6 +608,7 @@ void amigagfx_close(void)
 	g_ptrs = NULL;
 	free(g_chunky); free(g_disp);
 	g_chunky = g_disp = NULL;
+	free(g_shadow); g_shadow = NULL; g_shadow_ok = 0;
 	g_open = 0;
 	host_logf("amigagfx_close");
 }
@@ -673,7 +677,7 @@ void amigagfx_set_palette(const unsigned char *rgb, int first, int count)
 
 void amigagfx_set_ehb_palette(const unsigned char *rgb64) { (void)rgb64; }
 
-void amigagfx_blit(int x, int y, int w, int h)
+static void host_blit_raw(int x, int y, int w, int h)
 {
 	int r;
 	if (!g_open) return;
@@ -704,6 +708,27 @@ void amigagfx_blit(int x, int y, int w, int h)
 	sdl_present(0);
 #endif
 }
+
+/* the same changed-cell code as the Amiga c2p path (native/cellcmp.c), so the host shot test checks it:
+ * g_shadow mirrors what the display shows; on AGA/EHB amigagfx_blit_changed converts only changed cells */
+
+void amigagfx_blit(int x, int y, int w, int h)
+{
+	host_blit_raw(x, y, w, h);
+	if (g_shadow) cellcmp_store(g_chunky, g_shadow, g_w, g_w, g_gh, x, y, x + w, y + h);
+}
+
+void amigagfx_blit_changed(int x, int y, int w, int h)
+{
+	if (!g_open || (g_backend != AMIGAGFX_BACKEND_AGA && g_backend != AMIGAGFX_BACKEND_EHB) || (g_w & 3)) {
+		amigagfx_blit(x, y, w, h); return;
+	}
+	if (!g_shadow) { g_shadow = (unsigned char *)malloc((size_t)g_w * g_gh); g_shadow_ok = 0; if (!g_shadow) { amigagfx_blit(x, y, w, h); return; } }
+	if (!g_shadow_ok) { amigagfx_blit(0, 0, g_w, g_gh); g_shadow_ok = 1; return; }
+	cellcmp_blit(g_chunky, g_shadow, g_w, g_w, g_gh, x, y, w, h, host_blit_raw);
+}
+
+void amigagfx_cell_stats(unsigned long *conv, unsigned long *all) { cellcmp_stats(conv, all); }
 
 int amigagfx_poll(AmigaGfxEvent *ev)
 {

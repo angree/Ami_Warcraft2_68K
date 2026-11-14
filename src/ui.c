@@ -1211,6 +1211,104 @@ static void update_cursor(void)
 	ui_cursor_set(shape, local_race());
 }
 
+/* ------------------------------------------------------------------ panel dirty regions
+ * The panel around the map is drawn (and converted by c2p / blitted) only where its content changed.
+ * Each region has a signature of everything it shows; a region is redrawn when its signature changes,
+ * on ui_panel_force(), and all of them every UI_REFRESH frames as a safety net for anything the
+ * signatures miss. The map viewport is redrawn every frame by game.c. Rectangles in hires units. */
+enum { R_MINI, R_INFO, R_TOP, R_BOT, R_FILL, R_COUNT };
+static const short g_reg[R_COUNT][4] = {
+	{ 0, 0, PANEL_W, INFO_Y },              /* menu button + minimap */
+	{ 0, INFO_Y, PANEL_W, 480 - INFO_Y },   /* selection info + command card */
+	{ RES_X, 0, FILL_X - RES_X, 16 },       /* resources and food */
+	{ RES_X, STATUS_Y, FILL_X - RES_X, 16 },/* status line */
+	{ FILL_X, 0, 640 - FILL_X, 480 }        /* right border (static) */
+};
+#define UI_REFRESH 50
+static uint32_t g_reg_sig[R_COUNT];
+static uint8_t  g_reg_drawn[R_COUNT];
+static int g_reg_force = 1, g_reg_frames;
+
+void ui_panel_force(void) { g_reg_force = 1; }
+
+static uint32_t mix(uint32_t h, uint32_t v)
+{
+	h ^= v; h *= 16777619u; h ^= h >> 15;
+	return h;
+}
+
+static void panel_sigs(uint32_t *sg)
+{
+	const W2Player *pl = &w2.player[me()];
+	int i, c, si;
+	uint32_t h;
+	/* menu button + minimap: the minimap follows units/fog, refreshed every 8 cycles or when the view moves */
+	h = mix(2166136261u, (uint32_t)g_menu_press | (uint32_t)in_rect(g_mx, g_my, MENU_BX, MENU_BY, MENU_BW, MENU_BH) << 1);
+	h = mix(h, w2.cycle >> 3); h = mix(h, (uint32_t)view.map_x); h = mix(h, (uint32_t)view.map_y);
+	sg[R_MINI] = mix(h, (uint32_t)g_mode);
+	/* selection info + card (stats with upgrades are covered by the periodic refresh) */
+	h = mix(2166136261u, w2.select_n);
+	for (i = 0; i < w2.select_n; i++) {
+		const W2Unit *u = &w2.unit[w2.select[i]];
+		h = mix(h, (uint32_t)w2.select[i] | (uint32_t)u->type << 16 | (uint32_t)u->owner << 24);
+		h = mix(h, (uint32_t)u->hp | (uint32_t)u->mana << 16 | (uint32_t)u->order << 24);
+		h = mix(h, (uint32_t)u->progress | (uint32_t)u->queue_type << 16 | (uint32_t)(u->flags & W2_UF_UNDERCONST) << 24);
+		h = mix(h, u->res_left);
+	}
+	for (i = 0; i < 9; i++) h = mix(h, (uint32_t)(uintptr_t)g_card[i]);
+	c = card_at(g_mx, g_my);
+	h = mix(h, (uint32_t)(g_btn_press + 1) | (uint32_t)(c + 1) << 8 | (uint32_t)g_level << 16 | (uint32_t)g_mode << 24);
+	h = mix(h, (uint32_t)pl->food_used | (uint32_t)pl->food_supply << 16);
+	sg[R_INFO] = h;
+	/* resources */
+	h = mix(2166136261u, (uint32_t)pl->gold); h = mix(h, (uint32_t)pl->wood); h = mix(h, (uint32_t)pl->oil);
+	sg[R_TOP] = mix(h, (uint32_t)pl->food_used | (uint32_t)pl->food_supply << 16);
+	/* status line: what the pointer is over */
+	si = in_rect(g_mx, g_my, 0, INFO_Y, PANEL_W, 176) ? sel_icon_at(g_mx, g_my) : -1;
+	h = mix(2166136261u, (uint32_t)(c + 1) | (uint32_t)(si + 1) << 8 | (uint32_t)g_menu << 16);
+	h = mix(h, (uint32_t)(uintptr_t)(c >= 0 ? g_card[c] : NULL));
+	h = mix(h, si >= 0 ? w2.unit[w2.select[si]].type : 0xFFFF);
+	sg[R_BOT] = mix(h, (uint32_t)in_rect(g_mx, g_my, MENU_BX, MENU_BY, MENU_BW, MENU_BH));
+	sg[R_FILL] = 0;
+}
+
+static void panel_draw(void)
+{
+	uint32_t sg[R_COUNT];
+	int r, all = g_reg_force || ++g_reg_frames >= UI_REFRESH || !w2_dirty;
+	if (all) { g_reg_force = 0; g_reg_frames = 0; }
+	panel_sigs(sg);
+	for (r = 0; r < R_COUNT; r++) {
+		g_reg_drawn[r] = (uint8_t)(all || sg[r] != g_reg_sig[r]);
+		g_reg_sig[r] = sg[r];
+	}
+	if (g_reg_drawn[R_MINI]) {
+		draw_image(IMG_MENUBTN, 0, 0);
+		draw_image(IMG_MINIMAP, 0, 24);
+		draw_menu_button();
+		minimap_draw(MINI_X, MINI_Y, MINI_S);
+	}
+	if (g_reg_drawn[R_INFO]) {
+		draw_image(IMG_BUTTONS, 0, BTNP_Y);
+		draw_info();
+		draw_card();
+	}
+	if (g_reg_drawn[R_TOP]) { draw_image(IMG_RESOURCE, RES_X, 0); draw_resources(); }
+	if (g_reg_drawn[R_BOT]) { draw_image(IMG_STATUS, RES_X, STATUS_Y); draw_status(); }
+	if (g_reg_drawn[R_FILL]) draw_image(IMG_FILLER, FILL_X, 0);
+}
+
+int ui_dirty_rects(short (*out)[4], int max)
+{
+	int r, n = 0;
+	for (r = 0; r < R_COUNT && n < max; r++) {
+		if (!g_reg_drawn[r]) continue;
+		out[n][0] = g_reg[r][0]; out[n][1] = g_reg[r][1]; out[n][2] = g_reg[r][2]; out[n][3] = g_reg[r][3];
+		n++;
+	}
+	return n;
+}
+
 void ui_draw(void)
 {
 	B = view.buf; P = view.pitch;
@@ -1227,19 +1325,7 @@ void ui_draw(void)
 
 	draw_map_overlays();
 	draw_messages();
-	/* chrome */
-	draw_image(IMG_MENUBTN, 0, 0);
-	draw_image(IMG_MINIMAP, 0, 24);
-	draw_image(IMG_BUTTONS, 0, BTNP_Y);
-	draw_image(IMG_RESOURCE, RES_X, 0);
-	draw_image(IMG_STATUS, RES_X, STATUS_Y);
-	draw_image(IMG_FILLER, FILL_X, 0);
-	draw_menu_button();
-	minimap_draw(MINI_X, MINI_Y, MINI_S);
-	draw_info();
-	draw_card();
-	draw_resources();
-	draw_status();
+	panel_draw();             /* the panel regions whose content changed (dirty rectangles) */
 	if (g_menu) draw_game_menu();
 	update_cursor();
 }

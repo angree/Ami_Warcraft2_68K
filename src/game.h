@@ -27,4 +27,8 @@ extern int game_draws_minimap;
 /* Player counts as present for victory/defeat: had units or buildings when the game started. */
 int game_player_alive(int player);
 
+/* rectangles drawn by the last game_draw (buffer pixels x,y,w,h); -1: convert the whole screen */
+int game_dirty(short (*out)[4], int max);
+extern int w2_dirty;   /* 1: dirty rectangles on (default) */
+
 #endif

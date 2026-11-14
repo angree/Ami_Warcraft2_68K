@@ -17,6 +17,7 @@
 #include "economy.h"
 #include "menu.h"
 #include "combat.h"
+#include "amiga_uclock.h"
 #include "ui.h"
 
 W2World w2;
@@ -30,10 +31,12 @@ int w2_think_period = 1;
  * cycle (unlimited gave 1.6-3x more stalls when an army starts moving).  Measuring switches (w2.cfg):
  * faithful=1 fog every cycle + unlimited searches (the full original), 2 fog only, 3 unlimited searches only. */
 int w2_faithful;          /* fog every cycle */
+int w2_dirty = 1;         /* dirty rectangles (w2.cfg dirty=0: draw and convert everything every frame) */
 
 static void apply_mode(void)
 {
 	int f = w2cfg_extra_int("faithful", 0);
+	w2_dirty = w2cfg_extra_int("dirty", 1) != 0;
 	w2_faithful = (f == 1 || f == 2);
 	w2_think_period = 1;
 	path_node_budget = 5000;
@@ -43,6 +46,7 @@ static void apply_mode(void)
 }
 int game_mouse_x, game_mouse_y;
 int game_draws_minimap = 1;
+unsigned long game_prof_us[5];   /* draw sections (profile=1): map+fog, units, missiles, minimap, ui */
 
 static int g_quit;
 static int g_menu_was_play;      /* the last frame drawn was the game: the menu must repaint all */
@@ -50,7 +54,9 @@ static int g_mouse_seen;
 static int g_keys;                 /* arrow keys held: 1 up 2 down 4 left 8 right */
 static int g_clear;                /* frames that still clear the whole buffer (entering play) */
 static uint8_t g_present[8];       /* player had units/buildings at the start */
-static int g_end_wait;             /* cycles from game over to the end screen */
+static int g_end_wait;
+static int g_full_frame;            /* this frame must be converted whole */
+static int g_was_menu = 1;          /* the previous frame was not the game */             /* cycles from game over to the end screen */
 
 #define RAW_UP    0x4C
 #define RAW_DOWN  0x4D
@@ -324,6 +330,7 @@ int game_draw(unsigned char *buf, int pitch, int w, int h)
 		menu_draw();
 		return 1;
 	}
+	if (!g_menu_was_play) g_was_menu = 1;
 	g_menu_was_play = 1;
 	view.scr_x = GAME_VIEW_X; view.scr_y = GAME_VIEW_Y;
 	view.scr_w = GAME_VIEW_W; view.scr_h = GAME_VIEW_H;
@@ -332,18 +339,46 @@ int game_draw(unsigned char *buf, int pitch, int w, int h)
 	if ((view.scr_y + view.scr_h) >> lo > h) view.scr_h = (h << lo) - view.scr_y;
 	if (view.scr_w < 0) view.scr_w = 0;
 	if (view.scr_h < 0) view.scr_h = 0;
+	g_full_frame = 0;
 	if (g_clear > 0) {
 		int y;
 		for (y = 0; y < h; y++) memset(buf + (long)y * pitch, mapdraw_black(), (size_t)w);
 		g_clear--;
+		g_full_frame = 1;
+		ui_panel_force();
 	}
-	mapdraw_draw();
-	unitdraw_draw();
-	missile_draw_all();
-	if (game_draws_minimap && (GAME_MINIMAP_X + GAME_MINIMAP_SZ) >> lo <= w && (GAME_MINIMAP_Y + GAME_MINIMAP_SZ) >> lo <= h)
-		minimap_draw(GAME_MINIMAP_X, GAME_MINIMAP_Y, GAME_MINIMAP_SZ);
-	ui_draw();
-	return 1;    /* TODO dirty rectangles: viewport + panel parts that changed */
+	if (g_was_menu) { g_was_menu = 0; g_full_frame = 1; ui_panel_force(); }
+	{
+		unsigned long t0 = amiga_uclock_us(), t1, t2, t3, t4, t5;
+		mapdraw_draw();
+		t1 = amiga_uclock_us();
+		unitdraw_draw();
+		t2 = amiga_uclock_us();
+		missile_draw_all();
+		t3 = amiga_uclock_us();
+		if (game_draws_minimap && (GAME_MINIMAP_X + GAME_MINIMAP_SZ) >> lo <= w && (GAME_MINIMAP_Y + GAME_MINIMAP_SZ) >> lo <= h)
+			minimap_draw(GAME_MINIMAP_X, GAME_MINIMAP_Y, GAME_MINIMAP_SZ);
+		t4 = amiga_uclock_us();
+		ui_draw();
+		t5 = amiga_uclock_us();
+		game_prof_us[0] += t1 - t0; game_prof_us[1] += t2 - t1; game_prof_us[2] += t3 - t2;
+		game_prof_us[3] += t4 - t3; game_prof_us[4] += t5 - t4;
+	}
+	return 1;
+}
+
+/* the rectangles drawn by the last game_draw, in BUFFER pixels; -1 = convert the whole screen */
+int game_dirty(short (*out)[4], int max)
+{
+	int n, i, lo = view.lores;
+	if (game_state != GS_PLAY || g_full_frame || max < 2 || !w2_dirty) return -1;
+	out[0][0] = (short)view.scr_x; out[0][1] = (short)view.scr_y; out[0][2] = (short)view.scr_w; out[0][3] = (short)view.scr_h;
+	n = 1 + ui_dirty_rects(out + 1, max - 1);
+	for (i = 0; i < n; i++) {
+		out[i][0] = (short)(out[i][0] >> lo); out[i][1] = (short)(out[i][1] >> lo);
+		out[i][2] = (short)(out[i][2] >> lo); out[i][3] = (short)(out[i][3] >> lo);
+	}
+	return n;
 }
 
 int game_event(const AmigaGfxEvent *ev)

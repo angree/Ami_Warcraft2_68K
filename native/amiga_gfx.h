@@ -244,6 +244,10 @@ void amigagfx_set_ehb_palette(const unsigned char *rgb64);
  * a small scratch band first. That is handled internally and callers see no
  * difference; a full-width rectangle skips the copy entirely. */
 void amigagfx_blit(int x, int y, int w, int h);
+/* like amigagfx_blit, but on AGA/EHB converts only the 32x16 cells that differ from what the screen shows */
+void amigagfx_blit_changed(int x, int y, int w, int h);
+/* cells converted / compared by amigagfx_blit_changed since the last call (resets) */
+void amigagfx_cell_stats(unsigned long *conv, unsigned long *all);
 
 /* Milliseconds since program start; OpenTTD's main loop needs a ms clock. */
 unsigned long amigagfx_millis(void);

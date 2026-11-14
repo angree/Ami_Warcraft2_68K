@@ -67,7 +67,7 @@ cc() {   # cc <dir> <file> [extra flags]   (object rebuilt when the file or any 
 }
 
 for f in fp_conv.c fp_single.c fp_double.c; do cc "$WORK/native" $f -fno-builtin; done
-NAT="amiga_gfx amiga_trap amiga_stack amiga_uclock amiga_audio amiga_adpcm w2_sys"
+NAT="amiga_gfx amiga_trap amiga_stack amiga_uclock amiga_audio amiga_adpcm w2_sys cellcmp"
 for f in $NAT; do cc "$WORK/native" $f.c; done
 for f in $GAMESRC w2cfg.c; do cc "$WORK/src" $f; done
 if [ ! -f "$OBJ/c2p_glue.o" ] || [ "$WORK/native/c2p_glue.s" -nt "$OBJ/c2p_glue.o" ] || [ "$WORK/native/c2p_rect.s" -nt "$OBJ/c2p_glue.o" ] || [ "$WORK/native/c2p1x1_6_c5_bm_040.s" -nt "$OBJ/c2p_glue.o" ]; then

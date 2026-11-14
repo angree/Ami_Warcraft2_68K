@@ -58,6 +58,7 @@
  * which GCC 6.5 either rejects or miscompiles. */
 #include <proto/cybergraphics.h>
 
+#include "cellcmp.h"
 #include "amiga_gfx.h"
 
 /* Declared extern by <proto/cybergraphics.h>; ours to define and to fill. */
@@ -183,6 +184,8 @@ static struct Window *g_window;
 static struct BitMap  g_bitmap;
 static UBYTE *g_chip;
 static UBYTE *g_chunky;
+static UBYTE *g_shadow;          /* what the planes show (changed-cell blit), see amigagfx_blit_changed */
+static int    g_shadow_ok;
 static UBYTE *g_ehb_scratch;              /* NULL unless an EHB screen is open */
 static int    g_ehb_scratch_rows;
 static UBYTE  g_ehb_pal[64 * 3];          /* set by amigagfx_set_ehb_palette */
@@ -2128,6 +2131,8 @@ void amigagfx_close(void)
 	/* pozyczone plaszczyzny ekranu (adopt_screen_planes) odeszly razem z nim */
 	g_planes = NULL; g_planes_bm = &g_bitmap; g_planes_step = 0; g_planes_wcp = 0;
 	if (g_chunky != NULL) { FreeVec(g_chunky); g_chunky = NULL; }
+	if (g_shadow != NULL) { FreeVec(g_shadow); g_shadow = NULL; }
+	g_shadow_ok = 0;
 	if (g_ehb_scratch != NULL) { FreeVec(g_ehb_scratch); g_ehb_scratch = NULL; }
 	g_ehb_scratch_rows = 0;
 	g_depth = DEPTH_AGA;
@@ -2585,7 +2590,7 @@ static void ehb_blit(int x, int y, int w, int h)
 	}
 }
 
-void amigagfx_blit(int x, int y, int w, int h)
+static void blit_rect(int x, int y, int w, int h)
 {
 	struct C2PArgs args;
 	int x2, y2;
@@ -2725,6 +2730,42 @@ void amigagfx_blit(int x, int y, int w, int h)
 		fflush(stdout);
 	}
 }
+
+/* ---------------------------------------------------------------- changed-cell blit (AGA / EHB)
+ * AmiSC's dirty-cell method: a shadow copy of what the planes show; amigagfx_blit_changed() compares
+ * the chunky buffer with it in 32x16 cells (32 = the c2p column) with 32-bit XORs and converts only the
+ * cells that differ, runs closer than 3 cells merged into one c2p call. Every plain amigagfx_blit()
+ * copies its rectangle into the shadow too, so the shadow always equals the screen. RTG / window /
+ * WriteChunkyPixels: plain blit (no c2p to save). */
+static int planar_blit(void)
+{
+	return g_screen != NULL && !g_win_mode && !g_planes_wcp &&
+	       (g_backend == AMIGAGFX_BACKEND_AGA || g_backend == AMIGAGFX_BACKEND_EHB);
+}
+
+void amigagfx_blit(int x, int y, int w, int h)
+{
+	blit_rect(x, y, w, h);
+	if (g_shadow != NULL && planar_blit()) cellcmp_store(g_chunky, g_shadow, g_width, g_width, g_height, x, y, x + w, y + h);
+}
+
+void amigagfx_blit_changed(int x, int y, int w, int h)
+{
+	if (!planar_blit() || (g_width & 3)) { amigagfx_blit(x, y, w, h); return; }
+	if (g_shadow == NULL) {
+		g_shadow = (UBYTE *)AllocVec((ULONG)g_width * g_height, MEMF_ANY);
+		g_shadow_ok = 0;
+		if (g_shadow == NULL) { amigagfx_blit(x, y, w, h); return; }
+	}
+	if (!g_shadow_ok) {                       /* first use: the whole screen, shadow = screen */
+		amigagfx_blit(0, 0, g_width, g_height);
+		g_shadow_ok = 1;
+		return;
+	}
+	cellcmp_blit(g_chunky, g_shadow, g_width, g_width, g_height, x, y, w, h, blit_rect);
+}
+
+void amigagfx_cell_stats(unsigned long *conv, unsigned long *all) { cellcmp_stats(conv, all); }
 
 int amigagfx_poll(AmigaGfxEvent *ev)
 {

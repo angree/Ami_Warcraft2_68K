@@ -26,6 +26,9 @@
 #include "w2_sys.h"
 #include "amiga_uclock.h"
 #include "w2cfg.h"
+extern unsigned long game_prof_us[5];
+static int g_cellcmp = 1;   /* w2.cfg cellcmp=0: convert the whole map area every frame */
+#include "game.h"
 #include "version.h"
 #ifdef W2_HAVE_GAME
 #include "assets.h"            /* assets_set_ehb(): the game must know an EHB screen opened */
@@ -305,7 +308,7 @@ int w2_main(void)
 {
 	const char *cfgpath;
 	int rc = 0, fps10 = 0, nfps = 0, w2_cfg_prof;
-	unsigned long u0, u1, u2, p_logic = 0, p_draw = 0, p_cyc = 0, p_drop = 0;
+	unsigned long u0, u1, u1b, u2, p_blit = 0, p_logic = 0, p_draw = 0, p_cyc = 0, p_drop = 0;
 	unsigned long t_tick, t_fps, f_fps;
 
 	remove(LOGFILE);                                   /* freopen("w") does not truncate here */
@@ -343,6 +346,7 @@ int w2_main(void)
 	autoinput_load();
 
 	w2_cfg_prof = w2cfg_extra_int("profile", 0);
+	g_cellcmp = w2cfg_extra_int("cellcmp", 1);
 	t_tick = t_fps = amigagfx_millis();
 	f_fps = 0;
 	while (!g_quit) {
@@ -359,10 +363,22 @@ int w2_main(void)
 		for (n = 0; now - t_tick >= w2_tick_ms() && n < 5; n++) { game_tick(); t_tick += w2_tick_ms(); }
 		if (now - t_tick >= w2_tick_ms()) { t_tick = now; p_drop++; }  /* too far behind: drop the backlog */
 		u1 = amiga_uclock_us();
-		if (game_draw(amigagfx_chunky(), amigagfx_pitch(), amigagfx_game_width(), amigagfx_game_height()))
-			amigagfx_blit(0, 0, amigagfx_game_width(), amigagfx_game_height());
+		{
+			int dr = game_draw(amigagfx_chunky(), amigagfx_pitch(), amigagfx_game_width(), amigagfx_game_height());
+			u1b = amiga_uclock_us();
+			if (dr) {
+				short rc[8][4];
+				int k, nr = game_dirty(rc, 8);
+				if (nr < 0) amigagfx_blit(0, 0, amigagfx_game_width(), amigagfx_game_height());
+				else for (k = 0; k < nr; k++) {
+					if (k == 0 && g_cellcmp) amigagfx_blit_changed(rc[0][0], rc[0][1], rc[0][2], rc[0][3]);   /* the map */
+					else amigagfx_blit(rc[k][0], rc[k][1], rc[k][2], rc[k][3]);
+				}
+			}
+		}
 		u2 = amiga_uclock_us();
 		p_logic += u1 - u0; p_draw += u2 - u1; p_cyc += (unsigned long)n;
+		p_blit += u2 - u1b;
 		g_frames++;
 		if (now - t_fps >= 2000) {
 			fps10 = (int)((g_frames - f_fps) * 10000UL / (now - t_fps));
@@ -371,7 +387,15 @@ int w2_main(void)
 				unsigned long ms = now - t_fps;
 				w2_log("prof: %d.%d fps, logic %lu ms/s, draw %lu ms/s, %lu cycles/s, drops %lu",
 				       fps10 / 10, fps10 % 10, p_logic / ms, p_draw / ms, p_cyc * 1000UL / ms, p_drop);
-				p_logic = p_draw = p_cyc = p_drop = 0;
+				{
+					unsigned long cc, ca;
+					amigagfx_cell_stats(&cc, &ca);
+					w2_log("prof draw: map+fog %lu, units %lu, missiles %lu, minimap %lu, ui %lu, c2p/blit %lu ms/s, cells %lu/%lu",
+					       game_prof_us[0] / ms, game_prof_us[1] / ms, game_prof_us[2] / ms, game_prof_us[3] / ms,
+					       game_prof_us[4] / ms, p_blit / ms, cc, ca);
+				}
+				p_logic = p_draw = p_cyc = p_drop = p_blit = 0;
+				memset(game_prof_us, 0, sizeof game_prof_us);
 			}
 			t_fps = now; f_fps = g_frames;
 			if (w2_cfg.show_fps && fps_in_bar()) {          /* the Amiga bar is up: the counter goes there */

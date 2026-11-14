@@ -77,7 +77,7 @@ compile() {   # compile <src> <obj> [extra flags]
 }
 
 # --- platform layer
-for f in host_gfx host_audio host_sys amiga_adpcm; do
+for f in host_gfx host_audio host_sys amiga_adpcm cellcmp; do
 	extra=""; [ "$f" = host_gfx ] && extra="$SDLCF"
 	compile "$ROOT/native/$f.c" "$OBJ/$f.o" $extra || FAIL=1
 done
@@ -108,7 +108,7 @@ done
 for p in $PIDS; do wait "$p" || FAIL=1; done
 [ $FAIL = 0 ] || { echo "build-host: game sources failed to compile" >&2; exit 1; }
 
-PLAT="$OBJ/host_gfx.o $OBJ/host_audio.o $OBJ/host_sys.o $OBJ/amiga_adpcm.o"
+PLAT="$OBJ/host_gfx.o $OBJ/host_audio.o $OBJ/host_sys.o $OBJ/amiga_adpcm.o $OBJ/cellcmp.o"
 # self-test: the platform layer alone
 $CC $LDFLAGS -o "$OUT/host_selftest" "$OBJ/host_selftest.o" $PLAT $SDLLIB || exit 1
 if [ $HAVE_MAIN = 1 ]; then

@@ -33,6 +33,9 @@ enum {
  * shape did not change. race 0 human 1 orc. */
 void ui_cursor_set(int shape, int race);
 int  ui_cursor_shape(void);     /* shape shown now (-1 none) */
+/* panel dirty regions: force a full panel redraw next frame; the regions drawn this frame (hires x,y,w,h) */
+void ui_panel_force(void);
+int  ui_dirty_rects(short (*out)[4], int max);
 void ui_cursor_flush(void);    /* forget the current shape (after a screen reopen) */
 /* Test/debug: the reduced pointer image of a shape (pix values 0..3), its hot spot and pen colours. */
 int  ui_cursor_debug(int shape, int race, const unsigned char **pix, int *w, int *h,
