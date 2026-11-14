@@ -24,20 +24,22 @@ W2View view;
 int game_state = GS_MENU;
 int w2_think_period = 1;
 
-/* faithful=1 (w2.cfg): switch OFF our speed simplifications to measure what they buy:
- * fog rebuilt every cycle (ours: every 4), end check every cycle (ours: every 16), no path-search
- * limits (ours: 4096 expansions, 3 new searches per cycle), no logic skip. Behaviour otherwise equal. */
-int w2_faithful;
+/* Logic follows the original (user decision 2026-11-14, measured 0.3.x): end check every cycle, every
+ * unit decides every cycle (no logic skip), path search budget 5000. Kept simplifications: fog of war
+ * rebuilt every 4 cycles (every cycle costs 11-15 % fps on a 68020) and at most 3 NEW path searches per
+ * cycle (unlimited gave 1.6-3x more stalls when an army starts moving).  Measuring switches (w2.cfg):
+ * faithful=1 fog every cycle + unlimited searches (the full original), 2 fog only, 3 unlimited searches only. */
+int w2_faithful;          /* fog every cycle */
 
 static void apply_mode(void)
 {
-	int f = w2cfg_extra_int("faithful", 0);   /* 1 all, 2 fog/end check only, 3 path limits only */
+	int f = w2cfg_extra_int("faithful", 0);
 	w2_faithful = (f == 1 || f == 2);
-	if (f == 1 || f == 3) { path_node_budget = 5000; move_search_quota = 10000; }
-	else { path_node_budget = 4096; move_search_quota = 3; }
-	if (f == 1) w2_think_period = 1;
-	w2_log("game: %s mode (fog every %d, path budget %d, searches/cycle %d, think period %d)",
-	       f == 1 ? "faithful" : f == 2 ? "faithful-fog" : f == 3 ? "faithful-path" : "simplified", w2_faithful ? 1 : 4, path_node_budget, move_search_quota, w2_think_period);
+	w2_think_period = 1;
+	path_node_budget = 5000;
+	move_search_quota = (f == 1 || f == 3) ? 10000 : 3;
+	w2_log("game: logic mode %d (fog every %d, path budget %d, searches/cycle %d)", f, w2_faithful ? 1 : 4,
+	       path_node_budget, move_search_quota);
 }
 int game_mouse_x, game_mouse_y;
 int game_draws_minimap = 1;
@@ -194,7 +196,6 @@ int game_start(const W2Setup *s)
 	w2.cycle = 0;
 	w2.game_over = 0;
 	g_end_wait = 0;
-	w2_think_period = w2_cfg.logic_skip <= 1 ? 1 : w2_cfg.logic_skip;
 	apply_mode();
 
 	view.scr_x = GAME_VIEW_X; view.scr_y = GAME_VIEW_Y; view.scr_w = GAME_VIEW_W; view.scr_h = GAME_VIEW_H;
@@ -245,7 +246,6 @@ static void check_end(void)
 int game_init(void)
 {
 	const char *a;
-	w2_think_period = w2_cfg.logic_skip <= 1 ? 1 : w2_cfg.logic_skip;
 	apply_mode();
 	if (assets_init()) return -1;
 	if (snd_init()) w2_log("game: sound init failed - silent");
@@ -303,7 +303,7 @@ void game_tick(void)
 	ui_tick();
 	w2.cycle++;
 	if (!w2.game_over) {
-		if (w2_faithful || (w2.cycle & 15) == 0) check_end();
+		check_end();
 	} else if (g_end_wait > 0 && --g_end_wait == 0) {
 		game_end(w2.game_over);
 	}

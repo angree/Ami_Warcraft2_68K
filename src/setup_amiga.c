@@ -138,7 +138,7 @@ static int maxw(struct Screen *scr, const char *const *t, int n)
 int main(void)
 {
 	static const char *const lcol[] = { "Display", "Resolution", "RTG depth", "Amiga bar (multitask)", "Show FPS" };
-	static const char *const rcol[] = { "Audio", "Music", "Effects volume", "Music volume", "Game speed", "Logic skip", "Scroll speed" };
+	static const char *const rcol[] = { "Audio", "Music", "Effects volume", "Music volume", "Game speed", "Scroll speed" };
 	struct Screen *scr;
 	struct Window *win = NULL;
 	struct Gadget *glist = NULL, *g;
@@ -166,7 +166,7 @@ int main(void)
 	fh = scr->Font ? scr->Font->ta_YSize : 8;
 	step = fh + 9;
 	lw1 = maxw(scr, lcol, 5) + 12;
-	lw2 = maxw(scr, rcol, 7) + 12;
+	lw2 = maxw(scr, rcol, 6) + 12;
 	gw = maxw(scr, lab_disp, ndisp());
 	i = maxw(scr, lab_audio, naudio()); if (i > gw) gw = i;
 	i = maxw(scr, lab_res, 2); if (i > gw) gw = i;
@@ -214,10 +214,10 @@ int main(void)
 	yr += step;
 	ng.ng_Width = gw - textw(scr, "100") - 8;
 	{
-		static const int ids[5] = { G_SFXVOL, G_MUSVOL, G_SPEED, G_SKIP, G_SCROLL };
-		const int lo[5] = { 0, 0, 1, 0, 1 }, hi[5] = { 100, 100, 5, 8, 5 };
-		const int val[5] = { s.sfx_volume, s.music_volume, s.game_speed, s.logic_skip, s.scroll_speed };
-		for (i = 0; i < 5; i++) {
+		static const int ids[4] = { G_SFXVOL, G_MUSVOL, G_SPEED, G_SCROLL };
+		const int lo[4] = { 0, 0, 1, 1 }, hi[4] = { 100, 100, 5, 5 };
+		const int val[4] = { s.sfx_volume, s.music_volume, s.game_speed, s.scroll_speed };
+		for (i = 0; i < 4; i++) {
 			ng.ng_TopEdge = yr; ng.ng_GadgetText = (UBYTE *)rcol[2 + i]; ng.ng_GadgetID = ids[i];
 			g = g_gad[ids[i]] = CreateGadget(SLIDER_KIND, g, &ng, GTSL_Min, (ULONG)lo[i], GTSL_Max, (ULONG)hi[i],
 			                                 GTSL_Level, (ULONG)val[i], GTSL_LevelFormat, (ULONG)"%3ld", GTSL_MaxLevelLen, 3UL,

@@ -26,7 +26,8 @@ platform layer `native/`, GadTools configurator, one binary for AmigaOS/AROS/Mor
 - **AROS 68k and MorphOS from day one**, one 68k binary, run-time detection.
 - Configurator `w2setup` (Intuition/GadTools): backend, resolution, Paula/AHI/off, music, volumes,
   logic frameskip, speed.
-- Logic frameskip like AmiSC: heavy unit logic spread over frames.
+- Logic follows the original except the fog of war (every 4 cycles) and max 3 new path searches per
+  cycle; logic frameskip was measured useless and removed in 0.4.0 (user decision 2026-11-14).
 
 ## Rules
 

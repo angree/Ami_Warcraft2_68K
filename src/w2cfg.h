@@ -20,8 +20,8 @@
  *   sfx_volume    0..100                            80
  *   music_volume  0..100                            70
  *   game_speed    1..5                              3              1 slowest .. 5 fastest (3 = normal)
- *   logic_skip    0..8                              0              0 = off; N = the heavy unit logic is split
- *                                                                  across N frames (AmiSC-style logic frameskip)
+ *   logic_skip    0..8                              0              IGNORED since 0.4.0 (measured: no gain; every
+ *                                                                  unit decides every cycle as in the original)
  *   scroll_speed  1..5                              3
  *   show_fps      0 | 1                             0              frame counter: in the Amiga bar if shown, else top-left
  *   data_dir      path (max 127 chars)              PROGDIR:data   converted game data
