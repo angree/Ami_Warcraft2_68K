@@ -7,7 +7,7 @@ The engine is our own code in plain C, written from scratch for the Amiga (chunk
 no FPU needed). **No game data is included and none is needed from us: the game runs on the files of
 your own Warcraft II CD**, which you convert once on a PC with the extractor below.
 
-This is an early version (0.4.0): custom games (skirmish) against computer opponents on the maps of
+This is an early version (0.5.0): custom games (skirmish) against computer opponents on the maps of
 the CD. See "What works" below. Data converted for 0.1.0 works unchanged.
 
 ## 1. Extract the data from your own CD (on a PC)
@@ -57,7 +57,7 @@ Requirements: 68020 or better (68040 / fast 68030 recommended), AGA, an RTG card
 Developed and tested with 2 MB chip + 64 MB fast RAM; the real minimum has not been measured yet.
 Your own maps (`.pud`) go into a drawer `maps` next to the program.
 
-## 3. What works in 0.4.0
+## 3. What works in 0.5.0
 
 - Custom game against 1–7 computer opponents on the 28 built-in multiplayer maps and the CD's custom
   maps; humans and orcs; gold, lumber and oil; building, training, research and upgrades; land, sea
@@ -70,6 +70,12 @@ Your own maps (`.pud`) go into a drawer `maps` next to the program.
 - "Amiga bar": the game keeps its full area under the screen's title bar (on RTG a slightly taller
   mode of the same width is used, e.g. 320x256; without one the bar is left out). "Show FPS" puts
   the frame rate into the bar when it is shown.
+
+New in 0.5.0: much faster drawing. The panel around the map is drawn only where it changed, the
+map area is converted to the screen only in the 32x16 cells that changed (AGA / ECS), and the terrain
+with its fog is kept in a cache and redrawn only for the tiles that changed. Measured in WinUAE
+(68020, CPU throttled, no JIT), computer vs computer: AGA 320x240 29.7 -> 49.1 fps, AGA 640x480
+11.6 -> 34.7 fps, RTG 640x480 26.6 -> 49.4 fps, ECS 34.1 -> 48.9 fps. 640x480 on AGA is now playable.
 
 New in 0.4.0: the game logic now runs as in the original - every unit decides every game cycle, the
 end of the game is checked every cycle, longer path searches - except two measured speed savings that
@@ -91,8 +97,8 @@ once explored ("Gold Left"); 320x240 on RTG with the Amiga bar no longer cuts of
 game; the frame counter goes into the title bar.
 
 - Not yet: the campaigns and their briefings, spells, transports, saving games, multiplayer.
-  MorphOS is supported by design but has not been tested yet. Speed work (drawing only what changed)
-  is still ahead, so 640x480 on AGA is slow on anything below a fast 68040/060; use 320x240 or RTG.
+  MorphOS is supported by design but has not been tested yet. Big battles and long scrolling still cost
+  more than a quiet screen.
 
 ## 4. Building
 

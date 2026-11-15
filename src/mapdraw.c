@@ -269,10 +269,60 @@ static void copy_shade(uint8_t *d, int pitch, const uint8_t *s, int spitch, int 
 		for (x = 0; x < w; x++) d[x] = g_shade[s[x]];
 }
 
+/* one map tile (or the visible part of it) at d: terrain, fog shading/dither, black when unexplored */
+static void draw_tile(uint8_t *d, int pitch, int tx, int ty, int sx0, int sy0, int ww, int hh, int ts,
+                      int bit, int parity)
+{
+	int i, st;
+	const uint8_t *src;
+	if (tx >= w2.map.w || ty >= w2.map.h) { fill_rect(d, pitch, ww, hh, g_black); return; }
+	i = ty * w2.map.w + tx;
+	st = tile_state(i, bit);
+	if (!st) { fill_rect(d, pitch, ww, hh, g_black); return; }
+	src = assets_megatile(w2.map.mega[i]);
+	if (!src) { fill_rect(d, pitch, ww, hh, g_black); return; }
+	src += sy0 * ts + sx0;
+	if (st == 2) copy_rect(d, pitch, src, ts, ww, hh);
+	else if (mapdraw_fog_mode == MAPDRAW_FOG_SHADE) copy_shade(d, pitch, src, ts, ww, hh);
+	else copy_dither(d, pitch, src, ts, ww, hh, parity);
+}
+
+/* ---------------------------------------------------------------- terrain cache
+ * The viewport's terrain + fog lives in g_tc (viewport size, buffer pixels) and is copied into the
+ * frame every frame; units and overlays are drawn on top of the copy. A tile of the cache is redrawn
+ * only when its signature (megatile + fog state) changes; everything is redrawn when the view moves,
+ * the viewport, era, fog mode, reveal or local player changes. w2.cfg tcache=0: draw directly. */
+#define TC_MAXT 32                                /* tiles per row/column of the viewport (448/16 + 2) */
+static uint8_t *g_tc;
+static int g_tc_w, g_tc_h, g_tc_mx = -1, g_tc_my = -1, g_tc_lo = -1, g_tc_era = -1, g_tc_fogm = -1;
+static int g_tc_reveal = -1, g_tc_local = -1, g_tc_on = -1;
+static uint32_t g_tc_sig[TC_MAXT * TC_MAXT];
+unsigned long mapdraw_tc_tiles;                   /* tiles redrawn into the cache (profile) */
+
+static void draw_direct(uint8_t *buf, int pitch, int bx0, int by0, int bw, int bh, int mx, int my,
+                        int ts, int sh, int bit)
+{
+	int tx0 = mx >> sh, ty0 = my >> sh, tx1 = (mx + bw - 1) >> sh, ty1 = (my + bh - 1) >> sh, tx, ty;
+	for (ty = ty0; ty <= ty1; ty++) {
+		int ys = (ty << sh) - my, sy0 = 0, hh = ts;
+		if (ys < 0) { sy0 = -ys; hh += ys; ys = 0; }
+		if (ys + hh > bh) hh = bh - ys;
+		if (hh <= 0) continue;
+		for (tx = tx0; tx <= tx1; tx++) {
+			int xs = (tx << sh) - mx, sx0 = 0, ww = ts;
+			if (xs < 0) { sx0 = -xs; ww += xs; xs = 0; }
+			if (xs + ww > bw) ww = bw - xs;
+			if (ww <= 0) continue;
+			draw_tile(buf + (long)(by0 + ys) * pitch + bx0 + xs, pitch, tx, ty, sx0, sy0, ww, hh, ts, bit,
+			          ((mx + xs) + (my + ys) + 1) & 1);
+		}
+	}
+}
+
 void mapdraw_draw(void)
 {
 	int lo = view.lores ? 1 : 0, ts = lo ? 16 : 32, sh = lo ? 4 : 5;
-	int bx0, by0, bw, bh, mx, my, tx0, ty0, tx1, ty1, tx, ty, bit, mw = w2.map.w, mh = w2.map.h;
+	int bx0, by0, bw, bh, mx, my, tx0, ty0, tx1, ty1, tx, ty, bit, ncol, all, y;
 	uint8_t *buf = view.buf;
 	int pitch = view.pitch;
 	if (!buf) return;
@@ -282,34 +332,45 @@ void mapdraw_draw(void)
 	bw = view.scr_w >> lo;  bh = view.scr_h >> lo;
 	mx = view.map_x >> lo;  my = view.map_y >> lo;
 	if (bw <= 0 || bh <= 0) return;
+	bit = local_bit();
+	if (g_tc_on < 0) g_tc_on = w2cfg_extra_int("tcache", 1) != 0;
 	tx0 = mx >> sh; ty0 = my >> sh;
 	tx1 = (mx + bw - 1) >> sh; ty1 = (my + bh - 1) >> sh;
-	bit = local_bit();
+	ncol = tx1 - tx0 + 1;
+	if (!g_tc_on || ncol > TC_MAXT || ty1 - ty0 + 1 > TC_MAXT) { draw_direct(buf, pitch, bx0, by0, bw, bh, mx, my, ts, sh, bit); return; }
+	if (!g_tc || g_tc_w != bw || g_tc_h != bh) {
+		free(g_tc);
+		g_tc = (uint8_t *)malloc((size_t)bw * bh);
+		g_tc_w = bw; g_tc_h = bh; g_tc_mx = -1;
+		if (!g_tc) { g_tc_w = 0; draw_direct(buf, pitch, bx0, by0, bw, bh, mx, my, ts, sh, bit); return; }
+	}
+	all = mx != g_tc_mx || my != g_tc_my || lo != g_tc_lo || g_era_c != g_tc_era || mapdraw_fog_mode != g_tc_fogm ||
+	      mapdraw_reveal != g_tc_reveal || w2.local_player != g_tc_local;
+	if (all) {
+		g_tc_mx = mx; g_tc_my = my; g_tc_lo = lo; g_tc_era = g_era_c; g_tc_fogm = mapdraw_fog_mode;
+		g_tc_reveal = mapdraw_reveal; g_tc_local = w2.local_player;
+	}
 	for (ty = ty0; ty <= ty1; ty++) {
-		int ys = (ty << sh) - my, sy0 = 0, hh = ts;      /* tile top in viewport rows */
+		int ys = (ty << sh) - my, sy0 = 0, hh = ts;
+		uint32_t *sg = g_tc_sig + (ty - ty0) * TC_MAXT;
 		if (ys < 0) { sy0 = -ys; hh += ys; ys = 0; }
 		if (ys + hh > bh) hh = bh - ys;
 		if (hh <= 0) continue;
 		for (tx = tx0; tx <= tx1; tx++) {
-			int xs = (tx << sh) - mx, sx0 = 0, ww = ts, i, st;
-			uint8_t *d;
-			const uint8_t *src;
+			int xs = (tx << sh) - mx, sx0 = 0, ww = ts;
+			uint32_t sig;
 			if (xs < 0) { sx0 = -xs; ww += xs; xs = 0; }
 			if (xs + ww > bw) ww = bw - xs;
 			if (ww <= 0) continue;
-			d = buf + (long)(by0 + ys) * pitch + bx0 + xs;
-			if (tx >= mw || ty >= mh) { fill_rect(d, pitch, ww, hh, g_black); continue; }
-			i = ty * mw + tx;
-			st = tile_state(i, bit);
-			if (!st) { fill_rect(d, pitch, ww, hh, g_black); continue; }
-			src = assets_megatile(w2.map.mega[i]);
-			if (!src) { fill_rect(d, pitch, ww, hh, g_black); continue; }
-			src += sy0 * ts + sx0;
-			if (st == 2) copy_rect(d, pitch, src, ts, ww, hh);
-			else if (mapdraw_fog_mode == MAPDRAW_FOG_SHADE) copy_shade(d, pitch, src, ts, ww, hh);
-			else copy_dither(d, pitch, src, ts, ww, hh, ((mx + xs) + (my + ys) + 1) & 1);
+			if (tx >= w2.map.w || ty >= w2.map.h) sig = 0xFFFFFFFEu;
+			else { int i = ty * w2.map.w + tx; sig = (uint32_t)w2.map.mega[i] << 2 | (uint32_t)tile_state(i, bit); }
+			if (!all && sg[tx - tx0] == sig) continue;
+			sg[tx - tx0] = sig;
+			draw_tile(g_tc + (long)ys * bw + xs, bw, tx, ty, sx0, sy0, ww, hh, ts, bit, ((mx + xs) + (my + ys) + 1) & 1);
+			mapdraw_tc_tiles++;
 		}
 	}
+	for (y = 0; y < bh; y++) memcpy(buf + (long)(by0 + y) * pitch + bx0, g_tc + (long)y * bw, (size_t)bw);
 }
 
 /* ---------------------------------------------------------------- minimap */
