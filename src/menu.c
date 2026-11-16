@@ -29,6 +29,7 @@
 #include "amiga_gfx.h"
 #include "w2_sys.h"
 #include "snd.h"
+#include "campaign.h"
 
 #define SCR_W 640
 #define SCR_H 480
@@ -41,9 +42,13 @@ enum {
 	ID_OPT_SFX, ID_OPT_MUSICVOL, ID_OPT_SPEED, ID_OPT_SCROLL, ID_OPT_MUSIC, ID_OPT_OK, ID_OPT_CANCEL,
 	ID_SET_RACE, ID_SET_RES, ID_SET_UNITS, ID_SET_OPP, ID_SET_TYPE, ID_SET_START, ID_SET_SELECT, ID_SET_CANCEL,
 	ID_MAP_LIST, ID_MAP_UP, ID_MAP_DOWN, ID_MAP_OK, ID_MAP_CANCEL,
-	ID_END_CONTINUE
+	ID_END_CONTINUE,
+	ID_SP_CAMPAIGN, ID_SP_CUSTOM, ID_SP_PREV,
+	ID_CA_HUMAN, ID_CA_ORC, ID_CA_PREV,
+	ID_LV_LIST, ID_LV_UP, ID_LV_DOWN, ID_LV_OK, ID_LV_CANCEL,
+	ID_BR_CONTINUE, ID_FIN_CONTINUE
 };
-enum { S_EN, S_STR, S_MUS };   /* text source: English, War Strings entry, War Music 0 */
+enum { S_EN, S_STR, S_MUS };   /* text source: English, War Strings entry, War Music entry (0 / 47) */
 
 typedef struct MItem {
 	uint8_t scr, kind, id, src;
@@ -90,6 +95,24 @@ static const MItem g_items[] = {
 	{ MENU_SCR_MAPS, K_BUTTON, ID_MAP_CANCEL, S_STR, 364, 364, 106, 28, 11, 2, "Cancel" },
 	/* end screen */
 	{ MENU_SCR_END, K_BUTTON, ID_END_CONTINUE, S_STR, 208, 430, 224, 28, 22, 1, "Continue" },
+	/* single player (War Music 47 "SinglePlayer": New Campaign, Load Game, Custom Scenario, Previous Menu;
+	 * there are no saved games yet, so no "Load Game") */
+	{ MENU_SCR_SINGLE, K_BUTTON, ID_SP_CAMPAIGN, S_MUS, 208, 240, 224, 28, 47, 1, "New Campaign" },
+	{ MENU_SCR_SINGLE, K_BUTTON, ID_SP_CUSTOM,   S_MUS, 208, 276, 224, 28, 47, 3, "Custom Scenario" },
+	{ MENU_SCR_SINGLE, K_BUTTON, ID_SP_PREV,     S_MUS, 208, 312, 224, 28, 47, 4, "Previous Menu" },
+	/* campaign race (War Strings 95 "NewCampaign") */
+	{ MENU_SCR_CAMPAIGN, K_BUTTON, ID_CA_HUMAN, S_STR, 208, 240, 224, 28, 95, 1, "Human Campaign" },
+	{ MENU_SCR_CAMPAIGN, K_BUTTON, ID_CA_ORC,   S_STR, 208, 276, 224, 28, 95, 2, "Orc Campaign" },
+	{ MENU_SCR_CAMPAIGN, K_BUTTON, ID_CA_PREV,  S_STR, 208, 312, 224, 28, 95, 3, "Previous Menu" },
+	/* missions reached (panel 11) */
+	{ MENU_SCR_LEVELS, K_LIST,   ID_LV_LIST,   S_EN,  LIST_X, LIST_Y, 280, LIST_ROW * LIST_ROWS, 0, 0, "" },
+	{ MENU_SCR_LEVELS, K_UP,     ID_LV_UP,     S_EN,  452, LIST_Y, 19, 20, 0, 0, "" },
+	{ MENU_SCR_LEVELS, K_DOWN,   ID_LV_DOWN,   S_EN,  452, LIST_Y + LIST_ROW * LIST_ROWS - 20, 19, 20, 0, 0, "" },
+	{ MENU_SCR_LEVELS, K_BUTTON, ID_LV_OK,     S_STR, 170, 364, 106, 28, 11, 1, "OK" },
+	{ MENU_SCR_LEVELS, K_BUTTON, ID_LV_CANCEL, S_STR, 364, 364, 106, 28, 11, 2, "Cancel" },
+	/* briefing ("Human_Dispatch" / "Orc_Dispatch": Continue) and the campaign's end */
+	{ MENU_SCR_BRIEF, K_BUTTON, ID_BR_CONTINUE,  S_STR, 440, 440, 164, 28, 55, 1, "Continue" },
+	{ MENU_SCR_FINAL, K_BUTTON, ID_FIN_CONTINUE, S_STR, 440, 440, 164, 28, 55, 1, "Continue" },
 };
 #define NITEMS ((int)(sizeof g_items / sizeof g_items[0]))
 
@@ -122,6 +145,24 @@ typedef struct MapEnt {
 } MapEnt;
 static MapEnt g_maps[MAX_MAPS];
 static int g_nmaps, g_maps_built, g_msel, g_lsel, g_ltop;
+
+/* campaign screens */
+static int g_crace;                                  /* race chosen on the campaign screen */
+static unsigned long g_scr_t0;                       /* millis when the current screen was entered */
+static int g_br_off, g_br_voice, g_br_music, g_br_th;   /* briefing: scroll px, voice part, music on, text height */
+#define WR_MAX 80
+#define WR_LEN 96
+static char g_wr[WR_MAX][WR_LEN];                    /* wrapped briefing / final text */
+static int g_wr_n;
+static char g_ob[8][WR_LEN];                         /* wrapped objectives */
+static int g_ob_n;
+#define BR_X 64          /* briefing text area (HIRES) */
+#define BR_Y 72
+#define BR_W 290
+#define BR_H 360
+#define OB_X 380         /* objectives box (the dark box of the briefing pictures) */
+#define OB_Y 308
+#define OB_W 236
 
 /* end screen */
 typedef struct EndRow { uint8_t player, local; int32_t units, buildings, gold, wood, oil, kills; } EndRow;
@@ -166,26 +207,32 @@ static const char *clean_str(const char *raw, const char *fallback, int *hotkey)
 	return n ? o : fallback;
 }
 
-/* War Music entry 0: the "Custom Game Setup" string table (same layout as War Strings tables) */
-static unsigned char *g_mus0; static unsigned long g_mus0_n; static int g_mus0_tried;
-static const char *mus_string(int idx)
+/* War Music string tables (same layout as War Strings tables): entry 0 "Custom Game Setup",
+ * entry 47 "SinglePlayer" */
+static unsigned char *g_mus[2]; static unsigned long g_mus_n[2]; static int g_mus_tried[2];
+static const char *mus_string(int entry, int idx)
 {
 	unsigned n, off;
-	if (!g_mus0_tried) { g_mus0_tried = 1; g_mus0 = assets_load(ASSET_SPEECH, 0, &g_mus0_n); }
-	if (!g_mus0 || g_mus0_n < 4) return "";
-	n = W2_LE16(g_mus0);
-	if (idx < 0 || (unsigned)idx + 1 >= n || 4 + (unsigned long)idx * 2 > g_mus0_n) return "";
-	off = W2_LE16(g_mus0 + 2 + idx * 2);
-	if (off >= g_mus0_n) return "";
+	int k = entry == 47 ? 1 : 0;
+	unsigned char *d;
+	unsigned long dn;
+	if (!g_mus_tried[k]) { g_mus_tried[k] = 1; g_mus[k] = assets_load(ASSET_SPEECH, k ? 47 : 0, &g_mus_n[k]); }
+	d = g_mus[k]; dn = g_mus_n[k];
+	if (!d || dn < 4) return "";
+	n = W2_LE16(d);
+	/* idx + 1 < n: the last offset is the end of the table */
+	if (idx < 0 || (unsigned)idx >= n || 4 + (unsigned long)idx * 2 > dn) return "";
+	off = W2_LE16(d + 2 + idx * 2);
+	if (off >= dn) return "";
 	/* make sure the string ends inside the entry */
-	if (!memchr(g_mus0 + off, 0, g_mus0_n - off)) return "";
-	return (const char *)g_mus0 + off;
+	if (!memchr(d + off, 0, dn - off)) return "";
+	return (const char *)d + off;
 }
 
 static const char *str_of(int src, int entry, int idx, const char *fallback, int *hotkey)
 {
 	if (src == S_STR) return clean_str(assets_string(entry, idx), fallback, hotkey);
-	if (src == S_MUS) return clean_str(mus_string(idx), fallback, hotkey);
+	if (src == S_MUS) return clean_str(mus_string(entry, idx), fallback, hotkey);
 	if (hotkey) *hotkey = 0;
 	return fallback;
 }
@@ -265,6 +312,7 @@ static void frame_rect(int x, int y, int w, int h, int col)
 #define TS_H 64
 #define TS_KEY 255
 static unsigned char g_ts[TS_W * TS_H];
+static int g_cy0 = 0, g_cy1 = SCR_H;   /* vertical text clip, HIRES (scrolling briefing text) */
 
 static int txt(int font, int col, int x, int y, const char *s)
 {
@@ -272,6 +320,9 @@ static int txt(int font, int col, int x, int y, const char *s)
 	int sh = lo(), rows, adv, r, cx, w, x0, y0;
 	if (!view.buf || !s || !*s) return 0;
 	clip_all(&c);
+	if (c.y0 < (g_cy0 >> sh)) c.y0 = g_cy0 >> sh;
+	if (c.y1 > (g_cy1 >> sh)) c.y1 = g_cy1 >> sh;
+	if (c.y0 >= c.y1) return 0;
 	if (g_xid) return assets_text(font, col, view.buf, view.pitch, &c, x, y, s);
 	rows = ((assets_font_height(font) + 4) >> sh);
 	if (rows > TS_H) rows = TS_H;
@@ -283,7 +334,7 @@ static int txt(int font, int col, int x, int y, const char *s)
 	x0 = x >> sh; y0 = y >> sh;
 	for (r = 0; r < rows; r++) {
 		unsigned char *d; const unsigned char *src = g_ts + r * TS_W;
-		if (y0 + r < 0 || y0 + r >= bh()) continue;
+		if (y0 + r < 0 || y0 + r >= bh() || y0 + r < (g_cy0 >> sh) || y0 + r >= (g_cy1 >> sh)) continue;
 		d = view.buf + (long)(y0 + r) * view.pitch;
 		for (cx = 0; cx < w; cx++) {
 			int dx = x0 + cx;
@@ -564,10 +615,12 @@ static void preview_build(void)
 	map_free(m, d);
 }
 
-/* ---------------------------------------------------------------- movie (War Data 430 logo) */
+/* ---------------------------------------------------------------- movies (War Data 430 logo,
+ * War Movies cut-scenes of the campaign) */
 
 static SmkVideo g_smk; static unsigned char *g_smk_data; static int g_smk_on;
 static unsigned long g_smk_t0;
+static int g_mov_arch = ASSET_DATA, g_mov_entry = 430, g_mov_next = MENU_SCR_TITLE;
 
 static void movie_stop(void)
 {
@@ -579,15 +632,15 @@ static void movie_stop(void)
 static int movie_start(void)
 {
 	unsigned long n;
-	g_smk_data = assets_load(ASSET_DATA, 430, &n);
+	g_smk_data = assets_war(g_mov_arch) ? assets_load(g_mov_arch, g_mov_entry, &n) : NULL;
 	if (!g_smk_data || smk_open(&g_smk, g_smk_data, (uint32_t)n) != 0) {
-		w2_log("menu: logo movie not available");
+		w2_log("menu: movie %d/%d not available", g_mov_arch, g_mov_entry);
 		war_free(g_smk_data); g_smk_data = NULL;
 		return -1;
 	}
 	g_smk_on = 1;
 	g_smk_t0 = amigagfx_millis();
-	w2_log("menu: logo movie %dx%d, %d frames", g_smk.w, g_smk.h, g_smk.frames);
+	w2_log("menu: movie %d/%d %dx%d, %d frames", g_mov_arch, g_mov_entry, g_smk.w, g_smk.h, g_smk.frames);
 	return 0;
 }
 
@@ -604,7 +657,7 @@ static void movie_draw(void)
 		k++;
 	}
 	if (g_smk.cur < 0) { if (smk_next_frame(&g_smk, SMK_DECODE_VIDEO) == 0) amigagfx_set_palette(g_smk.palette, 0, 256); }
-	if (due >= g_smk.frames + 15) { movie_stop(); go(MENU_SCR_TITLE); return; }   /* hold the last frame ~1 s */
+	if (due >= g_smk.frames + 15) { movie_stop(); go(g_mov_next); return; }   /* hold the last frame ~1 s */
 	for (r = 0; r < H; r++) memset(view.buf + (long)r * view.pitch, 0, (size_t)W);
 	if (g_smk.cur < 0 || !g_smk.pixels) return;
 	yd = (g_smk.flags & (SMK_FLAG_Y_DOUBLE | SMK_FLAG_Y_INTERLACE)) ? 2 : 1;
@@ -618,6 +671,54 @@ static void movie_draw(void)
 		if (s == 2) for (c = 0; c < ow; c++) o[c] = src[c >> 1];
 		else memcpy(o, src, (size_t)ow);
 	}
+}
+
+/* ---------------------------------------------------------------- campaign text */
+
+/* word-wrap 't' (lines separated by '\n') to 'width' HIRES pixels of 'font' into out[max][WR_LEN] */
+static int wrap_text(int font, const char *t, int width, char (*out)[WR_LEN], int max)
+{
+	int n = 0;
+	if (!t) return 0;
+	while (*t && n < max) {
+		int len = 0, brk = -1;
+		char *o = out[n];
+		while (t[len] && t[len] != '\n' && len < WR_LEN - 1) {
+			o[len] = t[len];
+			o[len + 1] = 0;
+			if (t[len] == ' ') brk = len;
+			if (assets_text_width(font, o) > width && brk > 0) { len = brk; break; }
+			len++;
+		}
+		o[len] = 0;
+		while (len > 0 && o[len - 1] == ' ') o[--len] = 0;
+		n++;
+		t += len;
+		while (*t == ' ') t++;
+		if (*t == '\n') t++;
+	}
+	return n;
+}
+
+static int line_h(int font) { return assets_font_height(font) + 3; }
+
+/* entering the briefing / the campaign's end: wrap the texts, start the first voice part */
+static void brief_enter(int scr)
+{
+	g_br_off = 0; g_br_voice = 0; g_br_music = 0;
+	if (scr == MENU_SCR_BRIEF) {
+		g_wr_n = wrap_text(FONT_GAME, camp_briefing(), BR_W, g_wr, WR_MAX);
+		g_ob_n = wrap_text(FONT_GAME, camp_objectives(), OB_W, g_ob, 8);
+		if (camp_voice_count() > 0) camp_speech_play(camp_voice_entry(0));
+		w2_log("menu: briefing %s mission %d '%s': %d text lines, %d objective lines, %d voice parts",
+		       camp_race() ? "orc" : "human", camp_mission(), camp_title(), g_wr_n, g_ob_n, camp_voice_count());
+	} else {
+		g_wr_n = wrap_text(FONT_GAME, camp_final_text(), 512, g_wr, WR_MAX);
+		g_ob_n = 0;
+		camp_speech_play(camp_final_voice());
+		w2_log("menu: campaign end text %d lines", g_wr_n);
+	}
+	g_br_th = g_wr_n * line_h(FONT_GAME);
 }
 
 /* ---------------------------------------------------------------- screens */
@@ -636,10 +737,10 @@ static void screen_setup(int scr)
 	case MENU_SCR_TITLE:
 		ART(ASSET_DATA, 299);
 		assets_load_palette_for(ASSET_DATA, 300, art); bg_load(ASSET_DATA, 299, 0); break;
-	case MENU_SCR_MAIN:
+	case MENU_SCR_MAIN: case MENU_SCR_SINGLE: case MENU_SCR_CAMPAIGN:
 		ART(ASSET_RESOURCES, 13); ART(ASSET_RESOURCES, g_wset & 1); ART(ASSET_RESOURCES, 11);   /* same palette as the sub-screens */
 		assets_load_palette_for(ASSET_RESOURCES, 14, art); bg_load(ASSET_RESOURCES, 13, 0); break;
-	case MENU_SCR_OPTIONS: case MENU_SCR_MAPS:
+	case MENU_SCR_OPTIONS: case MENU_SCR_MAPS: case MENU_SCR_LEVELS:
 		ART(ASSET_RESOURCES, 15); ART(ASSET_RESOURCES, g_wset & 1); ART(ASSET_RESOURCES, 11);
 		assets_load_palette_for(ASSET_RESOURCES, 16, art); bg_load(ASSET_RESOURCES, 15, 11); break;
 	case MENU_SCR_SETUP:
@@ -649,6 +750,24 @@ static void screen_setup(int scr)
 		int off = (w2.player[w2.local_player & 7].race ? 1 : 0) + (g_result == 2 ? 2 : 0);
 		ART(ASSET_DATA, 359 + off); ART(ASSET_RESOURCES, g_wset & 1);
 		assets_load_palette_for(ASSET_DATA, 363 + off, art); bg_load(ASSET_DATA, 359 + off, 0);
+		break;
+	}
+	case MENU_SCR_ACT: {        /* act map: War Resources 19..26, palette War Resources 17 */
+		int pic = camp_act_picture();
+		ART(ASSET_RESOURCES, pic); ART(ASSET_RESOURCES, g_wset & 1);
+		assets_load_palette_for(ASSET_RESOURCES, 17, art); bg_load(ASSET_RESOURCES, pic, 0);
+		break;
+	}
+	case MENU_SCR_BRIEF: {      /* War Data 369..378 with palette 367 / 368 */
+		int pal, pic = camp_brief_picture(&pal);
+		ART(ASSET_DATA, pic); ART(ASSET_RESOURCES, g_wset & 1);
+		assets_load_palette_for(ASSET_DATA, pal, art); bg_load(ASSET_DATA, pic, 0);
+		break;
+	}
+	case MENU_SCR_FINAL: {      /* War Resources 29 / 30 */
+		int pal, pic = camp_final_picture(&pal);
+		ART(ASSET_RESOURCES, pic); ART(ASSET_RESOURCES, g_wset & 1);
+		assets_load_palette_for(ASSET_RESOURCES, pal, art); bg_load(ASSET_RESOURCES, pic, 0);
 		break;
 	}
 	default: return;
@@ -667,9 +786,17 @@ static void go(int scr)
 	g_press = -1;
 	g_focus = -1;
 	for (i = 0; i < NITEMS; i++) if (g_items[i].scr == scr && focusable(&g_items[i])) { g_focus = i; break; }
-	if (scr != MENU_SCR_END) g_wset = 0;
-	if (scr == MENU_SCR_MOVIE) { if (movie_start()) { go(MENU_SCR_TITLE); return; } }
+	if (scr == MENU_SCR_ACT || scr == MENU_SCR_BRIEF || scr == MENU_SCR_FINAL) g_wset = camp_race();
+	else if (scr == MENU_SCR_LEVELS) g_wset = g_crace;
+	else if (scr != MENU_SCR_END) g_wset = 0;
+	if (scr == MENU_SCR_MOVIE) { if (movie_start()) { go(g_mov_next); return; } }
+	g_scr_t0 = amigagfx_millis();
 	screen_setup(scr);
+	if (scr == MENU_SCR_BRIEF || scr == MENU_SCR_FINAL) brief_enter(scr);
+	if (scr == MENU_SCR_LEVELS) {
+		g_lsel = camp_progress(g_crace) - 1;
+		g_ltop = g_lsel - LIST_ROWS + 1; if (g_ltop < 0) g_ltop = 0;
+	}
 	if (scr == MENU_SCR_SETUP) {
 		maps_build();
 		if (g_prev_for != g_msel) preview_build();
@@ -759,6 +886,74 @@ static const char *cycle_text(int id)
 	}
 }
 
+/* ---------------------------------------------------------------- lists (maps / missions) */
+
+static int list_n(void) { return g_scr == MENU_SCR_LEVELS ? camp_progress(g_crace) : g_nmaps; }
+static const char *list_name(int k)
+{
+	static char b[64];
+	if (g_scr != MENU_SCR_LEVELS) return g_maps[k].name;
+	snprintf(b, sizeof b, "%s", camp_title_of(g_crace, k + 1));
+	if (!b[0]) snprintf(b, sizeof b, "Mission %d", k + 1);
+	return b;
+}
+
+/* ---------------------------------------------------------------- campaign flow */
+
+static void camp_after_act(int fresh)
+{
+	int m = camp_movie_before();
+	if (fresh && m >= 0 && g_movies && !assets_ehb() && assets_war(ASSET_MOVIES)) {
+		g_mov_arch = ASSET_MOVIES; g_mov_entry = m; g_mov_next = MENU_SCR_BRIEF;
+		go(MENU_SCR_MOVIE);
+		return;
+	}
+	go(MENU_SCR_BRIEF);
+}
+
+/* before a mission (Mac FUN_00142874 + f9_149C): act title, act movie, briefing. A retry after a
+ * defeat goes straight to the briefing (the Mac remembers the act / movie it showed last). */
+static void camp_flow(int fresh)
+{
+	if (fresh && camp_act_picture() >= 0) { go(MENU_SCR_ACT); return; }
+	camp_after_act(fresh);
+}
+
+static void camp_final(void)
+{
+	int m = camp_movie_final();
+	if (m >= 0 && g_movies && !assets_ehb() && assets_war(ASSET_MOVIES)) {
+		g_mov_arch = ASSET_MOVIES; g_mov_entry = m; g_mov_next = MENU_SCR_FINAL;
+		go(MENU_SCR_MOVIE);
+		return;
+	}
+	go(MENU_SCR_FINAL);
+}
+
+static void to_main(void)
+{
+	camp_speech_stop();
+	camp_stop();
+	if (!snd_music_active() || snd_music_track() != 0) snd_music_play(SND_MUS_MENU, 0);
+	go(MENU_SCR_MAIN);
+}
+
+static void camp_launch(void)
+{
+	int r;
+	camp_speech_stop();
+	g_err = NULL;
+	r = camp_start_game();
+	if (r != 0) {
+		w2_log("menu: campaign mission %d could not start (%d)", camp_mission(), r);
+		g_err = "Could not start the mission";
+		to_main();
+		return;
+	}
+	if (assets_era() >= 0 && assets_era() <= 2) { assets_load_palette(ASSET_DATA, g_era_pal[assets_era()]); assets_apply_palette(); }
+	g_scr = MENU_SCR_NONE;
+}
+
 /* ---------------------------------------------------------------- actions */
 
 static void start_game(void)
@@ -777,6 +972,7 @@ static void start_game(void)
 	s.resources = s_res;
 	s.units = s_units;
 	g_game_type = s_type;
+	camp_stop();
 	w2_log("menu: start '%s' (pud %d %s) race %d opp %d res %d units %d type %d", m->name, s.builtin_pud,
 	       s.pud_path, s.local_race, s.opponents, s.resources, s.units, s_type);
 	g_err = NULL;
@@ -796,6 +992,17 @@ static void start_game(void)
 static void leave_end(void)
 {
 	game_state = GS_MENU;
+	if (camp_active() && g_result == 1) {          /* won: the next mission, or the campaign's end */
+		if (camp_after_end(1)) camp_final();
+		else camp_flow(1);
+		return;
+	}
+	if (camp_active() && g_result == 2) {          /* lost: the same mission again */
+		camp_after_end(2);
+		camp_flow(0);
+		return;
+	}
+	camp_stop();
 	go(MENU_SCR_MAIN);
 }
 
@@ -803,8 +1010,25 @@ static void activate(int i)
 {
 	const MItem *m = &g_items[i];
 	click();
+	w2_log("menu: activate item %d (screen %d)", m->id, g_scr);
 	switch (m->id) {
-	case ID_SINGLE: g_err = NULL; go(MENU_SCR_SETUP); break;
+	case ID_SINGLE: g_err = NULL; go(MENU_SCR_SINGLE); break;
+	case ID_SP_CAMPAIGN: go(MENU_SCR_CAMPAIGN); break;
+	case ID_SP_CUSTOM: g_err = NULL; camp_stop(); go(MENU_SCR_SETUP); break;
+	case ID_SP_PREV: go(MENU_SCR_MAIN); break;
+	case ID_CA_HUMAN: case ID_CA_ORC:
+		g_crace = m->id == ID_CA_ORC;
+		camp_progress_load();
+		if (camp_progress(g_crace) <= 1) { camp_select(g_crace, 1); camp_flow(1); }   /* nothing to pick yet */
+		else go(MENU_SCR_LEVELS);
+		break;
+	case ID_CA_PREV: go(MENU_SCR_SINGLE); break;
+	case ID_LV_OK:
+		if (g_lsel >= 0 && g_lsel < list_n()) { camp_select(g_crace, g_lsel + 1); camp_flow(1); }
+		break;
+	case ID_LV_CANCEL: go(MENU_SCR_CAMPAIGN); break;
+	case ID_BR_CONTINUE: camp_launch(); break;
+	case ID_FIN_CONTINUE: to_main(); break;
 	case ID_OPTIONS:
 		o_sfx = w2_cfg.sfx_volume; o_mvol = w2_cfg.music_volume; o_speed = w2_cfg.game_speed;
 		o_scroll = w2_cfg.scroll_speed; o_music = w2_cfg.music;
@@ -826,7 +1050,7 @@ static void activate(int i)
 		g_lsel = g_msel; g_ltop = g_lsel - LIST_ROWS / 2; if (g_ltop < 0) g_ltop = 0;
 		go(MENU_SCR_MAPS);
 		break;
-	case ID_SET_CANCEL: go(MENU_SCR_MAIN); break;
+	case ID_SET_CANCEL: go(MENU_SCR_SINGLE); break;
 	case ID_MAP_OK:
 		if (g_lsel >= 0 && g_lsel < g_nmaps) g_msel = g_lsel;
 		if (s_opp > opp_max()) s_opp = 0;
@@ -841,10 +1065,11 @@ static void activate(int i)
 
 static void list_move(int d)
 {
-	if (!g_nmaps) return;
+	int n = list_n();
+	if (!n) return;
 	g_lsel += d;
 	if (g_lsel < 0) g_lsel = 0;
-	if (g_lsel >= g_nmaps) g_lsel = g_nmaps - 1;
+	if (g_lsel >= n) g_lsel = n - 1;
 	if (g_lsel < g_ltop) g_ltop = g_lsel;
 	if (g_lsel >= g_ltop + LIST_ROWS) g_ltop = g_lsel - LIST_ROWS + 1;
 }
@@ -891,10 +1116,10 @@ static void draw_item(int i)
 		int r;
 		fill(m->x - 4, m->y - 2, m->w + 8, m->h + 4, g_xmap[0]);
 		frame_rect(m->x - 4, m->y - 2, m->w + 8, m->h + 4, g_xmap[104]);
-		for (r = 0; r < LIST_ROWS && g_ltop + r < g_nmaps; r++) {
+		for (r = 0; r < LIST_ROWS && g_ltop + r < list_n(); r++) {
 			int k = g_ltop + r, y = m->y + r * LIST_ROW;
 			if (k == g_lsel) fill(m->x - 2, y, m->w + 4, LIST_ROW, g_xmap[180]);
-			txt(FONT_GAME, k == g_lsel ? FC_WHITE : FC_YELLOW, m->x + 2, y + 3, g_maps[k].name);
+			txt(FONT_GAME, k == g_lsel ? FC_WHITE : FC_YELLOW, m->x + 2, y + 3, list_name(k));
 		}
 		break;
 	}
@@ -953,6 +1178,24 @@ static void draw_end_extra(void)
 	}
 }
 
+/* briefing / campaign end: title, scrolling text, objectives */
+static void draw_brief_extra(void)
+{
+	int i, lh = line_h(FONT_GAME), y0 = g_scr == MENU_SCR_BRIEF ? BR_Y : 120, x0 = g_scr == MENU_SCR_BRIEF ? BR_X : 64;
+	int h = g_scr == MENU_SCR_BRIEF ? BR_H : 300;
+	if (g_scr == MENU_SCR_BRIEF) txt_c(FONT_LARGE, FC_WHITE, 320, 28, camp_title());
+	g_cy0 = y0; g_cy1 = y0 + h;
+	for (i = 0; i < g_wr_n; i++) {
+		int y = y0 + i * lh - g_br_off;
+		if (y + lh <= y0 || y >= y0 + h) continue;
+		txt(FONT_GAME, FC_YELLOW, x0, y, g_wr[i]);
+	}
+	g_cy0 = 0; g_cy1 = SCR_H;
+	if (g_scr != MENU_SCR_BRIEF) return;
+	txt(FONT_LARGE, FC_WHITE, OB_X, OB_Y, str_of(S_STR, camp_race() ? 56 : 55, 2, "Objectives:", NULL));
+	for (i = 0; i < g_ob_n; i++) txt(FONT_GAME, FC_YELLOW, OB_X, OB_Y + 24 + i * lh, g_ob[i]);
+}
+
 void menu_draw(void)
 {
 	int i;
@@ -966,6 +1209,7 @@ void menu_draw(void)
 		char b[48];
 		snprintf(b, sizeof b, "%s %s", W2_NAME, W2_VERSION);
 		txt(FONT_SMALL, FC_GREY, 12, 464, b);
+		if (g_err) txt_c(FONT_GAME, FC_WHITE, 320, 440, g_err);
 		break;
 	}
 	case MENU_SCR_OPTIONS:
@@ -979,6 +1223,18 @@ void menu_draw(void)
 		break;
 	}
 	case MENU_SCR_END: draw_end_extra(); break;
+	case MENU_SCR_LEVELS: {
+		txt_c(FONT_LARGE, FC_YELLOW, 320, 78, str_of(S_STR, 95, g_crace ? 2 : 1, g_crace ? "Orc Campaign" : "Human Campaign", NULL));
+		break;
+	}
+	case MENU_SCR_ACT:
+		txt_c(FONT_LARGE_TITLE, FC_YELLOW, 320, 190, camp_act_number());
+		txt_c(FONT_LARGE_TITLE, FC_YELLOW, 320, 240, camp_act_name());
+		break;
+	case MENU_SCR_BRIEF: case MENU_SCR_FINAL: draw_brief_extra(); break;
+	case MENU_SCR_SINGLE: case MENU_SCR_CAMPAIGN:
+		if (g_err) txt_c(FONT_GAME, FC_WHITE, 320, 440, g_err);
+		break;
 	default: break;
 	}
 	for (i = 0; i < NITEMS; i++) if (g_items[i].scr == g_scr) draw_item(i);
@@ -1008,9 +1264,15 @@ static void focus_step(int d)
 static void back(void)
 {
 	switch (g_scr) {
-	case MENU_SCR_OPTIONS: case MENU_SCR_SETUP: click(); go(MENU_SCR_MAIN); break;
+	case MENU_SCR_OPTIONS: click(); go(MENU_SCR_MAIN); break;
+	case MENU_SCR_SETUP: click(); go(MENU_SCR_SINGLE); break;
 	case MENU_SCR_MAPS: click(); go(MENU_SCR_SETUP); break;
 	case MENU_SCR_END: leave_end(); break;
+	case MENU_SCR_SINGLE: click(); go(MENU_SCR_MAIN); break;
+	case MENU_SCR_CAMPAIGN: click(); go(MENU_SCR_SINGLE); break;
+	case MENU_SCR_LEVELS: click(); go(MENU_SCR_CAMPAIGN); break;
+	case MENU_SCR_BRIEF: camp_launch(); break;
+	case MENU_SCR_FINAL: to_main(); break;
 	default: break;
 	}
 }
@@ -1029,13 +1291,16 @@ static int on_key(int code)
 {
 	int i, letter;
 	if (code & 0x80) return 1;   /* releases */
-	if (g_scr == MENU_SCR_MOVIE) { go(MENU_SCR_TITLE); return 1; }
+	if (g_scr == MENU_SCR_MOVIE) { movie_stop(); go(g_mov_next); return 1; }
 	if (g_scr == MENU_SCR_TITLE) { go(MENU_SCR_MAIN); return 1; }
 	if (g_scr == MENU_SCR_END) { leave_end(); return 1; }
+	if (g_scr == MENU_SCR_ACT) { camp_after_act(1); return 1; }
+	if (g_scr == MENU_SCR_BRIEF && (code == 0x45 || code == 0x44 || code == 0x43)) { camp_launch(); return 1; }   /* Esc / Return / Enter */
+	if (g_scr == MENU_SCR_FINAL) { to_main(); return 1; }
 	switch (code) {
 	case 0x45: back(); return 1;                                            /* Esc */
-	case 0x4C: if (g_scr == MENU_SCR_MAPS) list_move(-1); else focus_step(-1); return 1;   /* up */
-	case 0x4D: if (g_scr == MENU_SCR_MAPS) list_move(1); else focus_step(1); return 1;     /* down */
+	case 0x4C: if (g_scr == MENU_SCR_MAPS || g_scr == MENU_SCR_LEVELS) list_move(-1); else focus_step(-1); return 1;   /* up */
+	case 0x4D: if (g_scr == MENU_SCR_MAPS || g_scr == MENU_SCR_LEVELS) list_move(1); else focus_step(1); return 1;     /* down */
 	case 0x42: focus_step(1); return 1;                                     /* Tab */
 	case 0x4F: case 0x4E: {                                                  /* left / right */
 		int d = code == 0x4E ? 1 : -1;
@@ -1046,8 +1311,9 @@ static int on_key(int code)
 		return 1;
 	}
 	case 0x44: case 0x43: case 0x40:                                        /* Return / Enter / Space */
-		if (g_scr == MENU_SCR_MAPS && code != 0x40) {
-			for (i = 0; i < NITEMS; i++) if (g_items[i].id == ID_MAP_OK) { activate(i); break; }
+		if ((g_scr == MENU_SCR_MAPS || g_scr == MENU_SCR_LEVELS) && code != 0x40) {
+			int want = g_scr == MENU_SCR_MAPS ? ID_MAP_OK : ID_LV_OK;
+			for (i = 0; i < NITEMS; i++) if (g_items[i].id == want) { activate(i); break; }
 			return 1;
 		}
 		if (g_focus >= 0 && g_items[g_focus].kind != K_SLIDER) activate(g_focus);
@@ -1069,8 +1335,9 @@ static int on_key(int code)
 static void on_down(int button)
 {
 	int i;
-	if (g_scr == MENU_SCR_MOVIE) { go(MENU_SCR_TITLE); return; }
+	if (g_scr == MENU_SCR_MOVIE) { movie_stop(); go(g_mov_next); return; }
 	if (g_scr == MENU_SCR_TITLE) { go(MENU_SCR_MAIN); return; }
+	if (g_scr == MENU_SCR_ACT) { camp_after_act(1); return; }
 	i = hit(g_mx, g_my);
 	if (g_scr == MENU_SCR_END && i < 0) { leave_end(); return; }
 	if (i < 0) return;
@@ -1090,7 +1357,7 @@ static void on_down(int button)
 	}
 	case K_LIST: {
 		int k = g_ltop + (g_my - g_items[i].y) / LIST_ROW;
-		if (k >= 0 && k < g_nmaps) g_lsel = k;
+		if (k >= 0 && k < list_n()) g_lsel = k;
 		break;
 	}
 	case K_UP: click(); list_move(-1); break;
@@ -1141,12 +1408,32 @@ void menu_enter(void)
 	if (!snd_music_active() || snd_music_track() != 0) snd_music_play(SND_MUS_MENU, 0);   /* title song, looping */
 	if (g_first) {
 		g_first = 0;
+		g_mov_arch = ASSET_DATA; g_mov_entry = 430; g_mov_next = MENU_SCR_TITLE;
 		/* the logo movie brings a 256-colour palette per frame: not on an EHB screen */
 		go(g_movies && !assets_ehb() && assets_war(ASSET_DATA) ? MENU_SCR_MOVIE : MENU_SCR_TITLE);
 	} else go(MENU_SCR_MAIN);
 }
 
-void menu_tick(void) { g_ticks++; }
+void menu_tick(void)
+{
+	unsigned long el = amigagfx_millis() - g_scr_t0;
+	g_ticks++;
+	if (g_scr == MENU_SCR_ACT && el > 6000) { camp_after_act(1); return; }
+	if (g_scr == MENU_SCR_BRIEF || g_scr == MENU_SCR_FINAL) {
+		int h = g_scr == MENU_SCR_BRIEF ? BR_H : 300, off, mx = g_br_th - h;
+		/* voice parts one after the other, then the briefing music */
+		camp_speech_service();
+		if (!camp_speech_active() && g_scr == MENU_SCR_BRIEF) {
+			if (g_br_voice + 1 < camp_voice_count()) { g_br_voice++; camp_speech_play(camp_voice_entry(g_br_voice)); }
+			else if (!g_br_music) { g_br_music = 1; snd_music_play(SND_MUS_BRIEFING, camp_race()); }
+		}
+		/* the text stands 3 s, then scrolls up 1 px / 80 ms until its last line is in the box */
+		off = el > 3000 ? (int)((el - 3000) / 80) : 0;
+		if (mx < 0) mx = 0;
+		if (off > mx) off = mx;
+		if (off != g_br_off) { g_br_off = off; g_redraw = 1; }
+	}
+}
 
 /* 1 = menu_draw would change the screen (the logo movie always does); game_draw blits only then */
 int menu_needs_redraw(void) { return g_redraw || g_scr == MENU_SCR_MOVIE; }
@@ -1155,7 +1442,7 @@ void menu_force_redraw(void) { g_redraw = 1; }
 void endscreen_enter(int result)
 {
 	int p, i;
-	if (result != 1 && result != 2) { game_state = GS_MENU; go(MENU_SCR_MAIN); return; }
+	if (result != 1 && result != 2) { game_state = GS_MENU; camp_stop(); go(MENU_SCR_MAIN); return; }
 	g_result = result;
 	g_nend = 0;
 	snd_music_play(result == 1 ? SND_MUS_VICTORY : SND_MUS_DEFEAT, w2.player[w2.local_player].race ? 1 : 0);

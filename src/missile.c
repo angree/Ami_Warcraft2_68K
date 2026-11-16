@@ -14,8 +14,14 @@ typedef struct Missile {
 	uint16_t k, n;                      /* step k of n */
 	int16_t  shooter;                   /* unit slot or -1 */
 	uint16_t target;                    /* unit slot or W2_NO_UNIT (ground) */
-	uint8_t  mode, pad2;                /* DM_* */
+	uint8_t  mode, spell;               /* DM_*; MSP_* spell behaviour (0 = weapon/plain effect) */
 	uint16_t dmg;                       /* DM_DIRECT: damage rolled at launch; DM_AREA*: rating */
+	/* spell missiles (MSP_*): 16.16 position + direction per pixel of the major axis (the original's
+	 * Line_Init/Line_Step walks the Chebyshev distance), remaining distance, counters */
+	int32_t  fx, fy, vx, vy;
+	int16_t  rem, tx, ty;               /* remaining distance (px); target point */
+	uint16_t ttl, count;                /* lifetime / repeat counters (meaning per kind) */
+	uint8_t  phase, fwait, fend, pad3;  /* orbit index; frame timer; last frame + 1 (effects) */
 } Missile;
 
 enum { DM_NONE, DM_DIRECT, DM_AREA, DM_AREA_FIXED };
@@ -169,6 +175,267 @@ void missile_fire_dmg(int shooter, int type, int sx, int sy, int dx, int dy, int
 	launch(shooter, type, sx, sy, dx, dy, target, dmg > 0 ? dmg : 0, 0);
 }
 
+/* ==== spell missiles: the original's missile states 7..12 (CODE 5, 0x0012A03A..0x0012A9BE) ========== */
+/* flame shield orbit around the unit centre: 51 positions (A5+2AAE x, A5+29E2 y) */
+static const int8_t k_orbit_x[51] = { 1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 30, 31, 32, 32, 32, 31, 30, 28, 25, 22, 19, 16, 13,
+	10, 7, 4, 1, -2, -5, -8, -11, -14, -17, -20, -23, -25, -27, -28, -28, -28, -27, -26, -24, -22, -19, -16, -13, -10, -7, -4, -1 };
+static const int8_t k_orbit_y[51] = { -34, -34, -34, -33, -32, -31, -30, -28, -26, -23, -20, -17, -14, -11, -8, -5, -2, 1, 4, 6, 8,
+	9, 10, 11, 12, 12, 12, 12, 11, 11, 10, 8, 7, 5, 2, -1, -4, -7, -10, -13, -16, -19, -22, -25, -27, -29, -31, -32, -33, -34, -34 };
+#define SPL_ALL (W2_TGT_LAND | W2_TGT_SEA | W2_TGT_AIR)
+
+static void set_shooter(Missile *m, int s)
+{
+	if (s >= 0 && s < W2_MAX_UNITS && (w2.unit[s].flags & W2_UF_ALIVE)) {
+		m->shooter = (int16_t)s;
+		g_sgen[m - g_m] = unit_gen(s);
+		m->stype = w2.unit[s].type; m->sowner = w2.unit[s].owner;
+	}
+}
+
+static int shooter_now(const Missile *m)
+{
+	return (m->shooter >= 0 && unit_same(m->shooter, g_sgen[m - g_m])) ? m->shooter : -1;
+}
+
+/* straight line, whole-pixel speed along the major axis (the original's Line_Init / Line_Step) */
+static void line_to(Missile *m, int x0, int y0, int x1, int y1)
+{
+	int dx = x1 - x0, dy = y1 - y0, d = iabs(dx) > iabs(dy) ? iabs(dx) : iabs(dy);
+	m->fx = (int32_t)x0 * 65536; m->fy = (int32_t)y0 * 65536;
+	m->x = (int16_t)x0; m->y = (int16_t)y0;
+	m->tx = (int16_t)x1; m->ty = (int16_t)y1;
+	if (d) {
+		m->vx = (int32_t)dx * 65536 / d;
+		m->vy = (int32_t)dy * 65536 / d;
+		m->dir = (uint8_t)heading(dx, dy);
+	} else m->vx = m->vy = 0;
+	m->rem = (int16_t)d;
+}
+
+static void line_step(Missile *m, int sp)
+{
+	m->fx += m->vx * sp; m->fy += m->vy * sp;
+	m->x = (int16_t)(m->fx >> 16); m->y = (int16_t)(m->fy >> 16);
+}
+
+static int off_map(const Missile *m)
+{
+	return m->x < -256 || m->y < -256 || m->x >= w2.map.w * W2_TILE + 256 || m->y >= w2.map.h * W2_TILE + 256;
+}
+
+/* splash of a spell missile at its position: the original's MissileSplash(m, 1) - ground and air; these
+ * missile types ignore armor (A5+296A != 0); the shooter itself is never hit */
+static void spell_splash(Missile *m, int rating)
+{
+	combat_area_damage(m->x, m->y, rating, shooter_now(m), SPL_ALL, 1);
+}
+
+static Missile *spell_spawn(int type, int kind, int x, int y)
+{
+	Missile *m = spawn(type, x, y, x, y);
+	if (!m) return NULL;
+	m->spell = (uint8_t)kind;
+	m->x = (int16_t)x; m->y = (int16_t)y;
+	m->fx = (int32_t)x * 65536; m->fy = (int32_t)y * 65536;
+	return m;
+}
+
+/* play the frames [first, end) once, 'wait' cycles each */
+static void as_effect(Missile *m, int first, int end, int wait)
+{
+	m->spell = MSP_EFFECT;
+	m->frame = (uint8_t)first; m->fend = (uint8_t)end;
+	m->pad3 = (uint8_t)(wait < 1 ? 1 : wait); m->fwait = m->pad3;
+}
+
+void missile_effect(int type, int x, int y)
+{
+	const w2_missile *d;
+	Missile *m;
+	if (type < 0 || type >= W2_NUM_MISSILES || type == W2M_NONE) return;
+	d = &w2_missiles[type];
+	m = spell_spawn(type, MSP_EFFECT, x, y);
+	if (!m) return;
+	as_effect(m, 0, d->dirs == 9 ? m->anim_n : (d->frames ? d->frames : 1), type == W2M_EXPLOSION ? 2 : 3);
+}
+
+/* FUN_0012A03A: a shard starts 110 px left / 170 px above the field point (+-11 px jitter), rating 10 */
+static void blizzard_shard(int shooter, int x, int y, int count)
+{
+	int r1 = (int)(w2_rand() % 3u), r2 = (int)(w2_rand() % 3u);
+	Missile *m = spell_spawn(W2M_BLIZZARD, MSP_BLIZZARD, x, y);
+	if (!m) return;
+	set_shooter(m, shooter);
+	m->dmg = 10; m->count = (uint16_t)count;
+	line_to(m, x - 110 - (1 - r1) * 11, y - 170 - (1 - r2) * 11, x, y);
+	m->fwait = 3;
+}
+
+void missile_spell(int kind, int shooter, int target, int x, int y, int arg)
+{
+	Missile *m;
+	int sx = x, sy = y, i;
+	if (shooter >= 0 && shooter < W2_MAX_UNITS && (w2.unit[shooter].flags & W2_UF_ALIVE)) unit_center(shooter, &sx, &sy);
+	else shooter = -1;
+	switch (kind) {
+	case MSP_BREATH:        /* fireball spell: LaunchBreathMissile 0x0012A242 (missile 2, rating 40) */
+		m = spell_spawn(W2M_DRAGON_BREATH, kind, sx, sy);
+		if (!m) return;
+		set_shooter(m, shooter);
+		m->dmg = (uint16_t)(arg > 0 ? arg : 40);
+		line_to(m, sx, sy, x, y);
+		if (!m->rem && shooter >= 0) {        /* cast onto its own tile: roll on in the facing direction */
+			m->vx = (int32_t)dir_dx[w2.unit[shooter].dir] * 65536;
+			m->vy = (int32_t)dir_dy[w2.unit[shooter].dir] * 65536;
+		}
+		break;
+	case MSP_SHIELD_GO:     /* flame shield: LaunchFireballMissile 0x0012A372 (missile 3) to the target unit */
+		if (target < 0 || target >= W2_MAX_UNITS || !(w2.unit[target].flags & W2_UF_ALIVE)) return;
+		m = spell_spawn(W2M_FIREBALL, kind, sx, sy);
+		if (!m) return;
+		set_shooter(m, shooter);
+		m->target = (uint16_t)target; g_tgen[m - g_m] = unit_gen(target);
+		unit_center(target, &x, &y);
+		line_to(m, sx, sy, x, y);
+		break;
+	case MSP_SHIELD:        /* the 5 flames (FUN_0012A572): orbit index 0/10/20/30/40, ttl 512 + 3*f */
+		if (target < 0 || target >= W2_MAX_UNITS || !(w2.unit[target].flags & W2_UF_ALIVE)) return;
+		for (i = 0; i < 5; i++) {
+			static const uint8_t f0[5] = { 0, 4, 2, 3, 5 };
+			int cx, cy;
+			unit_center(target, &cx, &cy);
+			m = spell_spawn(W2M_FLAME_SHIELD, kind, cx + k_orbit_x[i * 10], cy + k_orbit_y[i * 10]);
+			if (!m) return;
+			set_shooter(m, target);           /* the shielded unit: never hit by its own flames */
+			m->phase = (uint8_t)(i * 10); m->frame = f0[i]; m->ttl = (uint16_t)(0x200 + 3 * f0[i]);
+			m->dmg = 4; m->fwait = 2;
+		}
+		break;
+	case MSP_BLIZZARD:      /* one field (Missile_SpawnAreaRandom): the shard, 'arg' more follow */
+		blizzard_shard(shooter, x, y, arg);
+		break;
+	case MSP_DND: {         /* Missile_AreaRandom 0x0012A1AE: point +-2 tiles, 'arg' splashes of 10 */
+		int ox = ((int)(w2_rand() % 5u) - 2) * W2_TILE, oy;
+		oy = ((int)(w2_rand() % 5u) - 2) * W2_TILE;
+		m = spell_spawn(W2M_DEATH_AND_DECAY, kind, x + ox, y + oy);
+		if (!m) return;
+		set_shooter(m, shooter);
+		m->dmg = 10; m->count = (uint16_t)(arg > 0 ? arg : 10); m->ttl = 0; m->frame = 1;
+		break; }
+	case MSP_WHIRL: {       /* Missile_WhirlwindSpawn 0x0012A8C0: +-64 px around the point, 800 steps, rating 4 */
+		int ox = (int)(w2_rand() & 0x7Fu) - 0x40, oy;
+		oy = (int)(w2_rand() & 0x7Fu) - 0x40;
+		m = spell_spawn(W2M_WHIRLWIND, kind, x + ox, y + oy);
+		if (!m) return;
+		set_shooter(m, shooter);
+		m->dmg = 4; m->ttl = (uint16_t)(arg > 0 ? arg : 800); m->fwait = 3;
+		line_to(m, x + ox, y + oy, x, y);
+		break; }
+	default: break;
+	}
+}
+
+/* one cycle of a spell missile */
+static void spell_tick(Missile *m)
+{
+	const w2_missile *d = &w2_missiles[m->type];
+	switch (m->spell) {
+	case MSP_EFFECT:
+		if (--m->fwait) return;
+		m->fwait = m->pad3;
+		if (++m->frame >= m->fend) free_missile(m);
+		return;
+	case MSP_BREATH: {      /* state 7: half speed in the last 50 px, then rolls on: splash every 8 steps */
+		int sp = 12, lim = m->dmg == 40 ? 40 : 25;
+		(void)w2_rand();                  /* the original calls Random() here and drops the result */
+		if (m->rem < 50) sp >>= 1;
+		line_step(m, sp);
+		m->rem = (int16_t)(m->rem - sp);
+		if (m->rem < 50) {
+			if (m->count > lim) { free_missile(m); return; }
+			m->count++;
+			if (!(m->count & 7)) {
+				spell_splash(m, m->dmg);
+				missile_effect(W2M_EXPLOSION, m->x, m->y);
+			}
+		}
+		if (off_map(m)) free_missile(m);
+		return; }
+	case MSP_SHIELD_GO:     /* state 8: fly, then the 5 flames around the target */
+		(void)w2_rand();
+		if (!m->count) {
+			line_step(m, 12);
+			m->rem = (int16_t)(m->rem - 12);
+			if (m->rem < 1) m->count = 1;
+			return;
+		}
+		if (m->target != W2_NO_UNIT && unit_same(m->target, g_tgen[m - g_m]))
+			missile_spell(MSP_SHIELD, -1, m->target, 0, 0, 0);
+		free_missile(m);
+		return;
+	case MSP_SHIELD: {      /* state 9: orbit while the unit lives, splash 4 when (ttl & 15) == 1 */
+		int cx, cy;
+		if (shooter_now(m) < 0 || --m->ttl == 0) { free_missile(m); return; }
+		if (++m->phase >= 51) m->phase = 0;
+		unit_center(m->shooter, &cx, &cy);
+		m->x = (int16_t)(cx + k_orbit_x[m->phase]); m->y = (int16_t)(cy + k_orbit_y[m->phase]);
+		if ((m->ttl & 15) == 1) spell_splash(m, m->dmg);
+		if (--m->fwait == 0) { m->fwait = 2; if (++m->frame >= (d->frames ? d->frames : 1)) m->frame = 0; }
+		return; }
+	case MSP_BLIZZARD:      /* state 10: fall onto the point, splash 10, then the next shard of the field */
+		line_step(m, 12);
+		m->rem = (int16_t)(m->rem - 12);
+		if (m->rem < 0) {
+			int sh = shooter_now(m);
+			spell_splash(m, m->dmg);
+			if (m->count) blizzard_shard(sh, m->tx, m->ty, m->count - 1);
+			as_effect(m, 2, 4, 2);            /* impact frames */
+			return;
+		}
+		(void)w2_rand();
+		if (--m->fwait == 0) { m->fwait = 3; m->frame ^= 1; }
+		return;
+	case MSP_DND: {         /* state 11: one splash per animation loop (27 cycles), 'count' times */
+		static const uint8_t fr[18] = { 1, 1, 1, 2, 2, 3, 3, 3, 4, 4, 5, 5, 5, 6, 6, 7, 7, 7 };
+		int t = m->ttl % 27;
+		m->ttl++;
+		m->frame = (uint8_t)(t < 18 ? fr[t] : 0);
+		if (t == 18) {
+			if (!m->count) { free_missile(m); return; }
+			m->count--;
+			spell_splash(m, m->dmg);
+		}
+		return; }
+	case MSP_WHIRL:         /* state 12: one step every 3 cycles: splash on odd ttl, 1 px, wander +-64 px */
+		if (--m->fwait) return;
+		m->fwait = 3;
+		if (m->ttl & 1) spell_splash(m, m->dmg);
+		if (--m->ttl == 0) { free_missile(m); return; }
+		if (++m->frame >= (d->frames ? d->frames : 1)) m->frame = 0;
+		line_step(m, 1);
+		if (--m->rem <= 0) {
+			int nx = m->tx + (int)(w2_rand() & 0x7Fu) - 0x40, ny = m->ty + (int)(w2_rand() & 0x7Fu) - 0x40;
+			int mw = w2.map.w * W2_TILE - 1, mh = w2.map.h * W2_TILE - 1;
+			if (nx < 0) nx = 0;
+			if (ny < 0) ny = 0;
+			if (nx > mw) nx = mw;
+			if (ny > mh) ny = mh;
+			line_to(m, m->tx, m->ty, nx, ny);
+		}
+		return;
+	default:
+		free_missile(m);
+		return;
+	}
+}
+
+int missile_count_kind(int kind)
+{
+	int i, n = 0;
+	for (i = 0; i < g_hi; i++) if (g_m[i].used && g_m[i].spell == kind) n++;
+	return n;
+}
+
 /* missile reached (x1,y1) */
 static void impact(Missile *m)
 {
@@ -202,6 +469,7 @@ void missile_tick_all(void)
 		Missile *m = &g_m[i];
 		const w2_missile *d;
 		if (!m->used) continue;
+		if (m->spell) { spell_tick(m); continue; }
 		if (m->wait > 1) { m->wait--; continue; }
 		d = &w2_missiles[m->type];
 		m->wait = d->sleep ? d->sleep : 1;

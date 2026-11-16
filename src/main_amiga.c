@@ -26,8 +26,9 @@
 #include "w2_sys.h"
 #include "amiga_uclock.h"
 #include "w2cfg.h"
-extern unsigned long game_prof_us[5];
+extern unsigned long game_prof_us[10];
 static int g_cellcmp = 1;   /* w2.cfg cellcmp=0: convert the whole map area every frame */
+#include "move.h"
 #include "game.h"
 #include "version.h"
 #ifdef W2_HAVE_GAME
@@ -394,6 +395,11 @@ int w2_main(void)
 					       game_prof_us[0] / ms, game_prof_us[1] / ms, game_prof_us[2] / ms, game_prof_us[3] / ms,
 					       game_prof_us[4] / ms, p_blit / ms, cc, ca);
 				}
+				w2_log("prof logic: units %lu, missiles+spells %lu, ai %lu, fog %lu, ui+campaign %lu ms/s; paths %lu (%lu exp, %lu partial, %lu none), units %d",
+				       game_prof_us[5] / ms, game_prof_us[6] / ms, game_prof_us[7] / ms, game_prof_us[8] / ms, game_prof_us[9] / ms,
+				       (unsigned long)path_stats.searches, (unsigned long)path_stats.expansions, (unsigned long)path_stats.partial, (unsigned long)path_stats.nopath, (int)w2.unit_hi);
+				memset(&path_stats, 0, sizeof path_stats);
+
 				p_logic = p_draw = p_cyc = p_drop = p_blit = 0;
 				memset(game_prof_us, 0, sizeof game_prof_us);
 			}

@@ -536,7 +536,7 @@ w('''/*
 #define W2_CYCLES_PER_SECOND_NORMAL 30u  /* game cycles per second at "normal" speed (Stratagus/Wargus) */
 #define W2_TIME_UNIT_CYCLES     6u      /* 1 build/train/research time unit = 6 cycles (NIEPEWNE, see spec) */
 #define W2_MANA_MAX             255u
-#define W2_MANA_START           84u     /* initial mana of a new caster (Wargus) */
+#define W2_MANA_START           85u     /* initial mana of a new caster (Mac 0x16D3A8; Wargus 84) */
 #define W2_GOLD_PER_PUD_UNIT    2500u   /* PUD UNIT.data for gold mine/oil patch * 2500 = amount */
 #define W2_TILE_PX              32u
 
@@ -905,7 +905,8 @@ extern const w2_game_speed  w2_game_speeds[];
 extern const uint8_t        w2_num_game_speeds;
 
 /* ---- accessors ---------------------------------------------------------- */
-const w2_unit_type *w2_unit(unsigned id);                      /* NULL if id out of range */
+static inline const w2_unit_type *w2_unit(unsigned id)          /* NULL if id out of range (inline: hot on 68k) */
+{ return id < W2_NUM_UNIT_TYPES ? &w2_unit_types[id] : (const w2_unit_type *)0; }
 /* returns first step of animation kind for a unit type (NULL if none); *count = number of steps */
 const w2_anim_step *w2_unit_anim(unsigned unit_id, unsigned kind, unsigned *count);
 const w2_anim_step *w2_anim(unsigned set, unsigned kind, unsigned *count);
@@ -1068,10 +1069,15 @@ SP_MISSILE = {'fireball': 'missile-fireball', 'death-coil': 'missile-death-coil'
               'death-and-decay': 'missile-death-and-decay', 'runes': 'missile-rune', 'whirlwind': 'missile-whirlwind',
               'flame-shield': 'missile-flame-shield', 'exorcism': 'missile-exorcism', 'healing': 'missile-heal-effect',
               'suicide-bomber': 'missile-explosion'}
+# the Mac binary differs from Wargus here (docs/RE_NOTES.md, spells review 2026-11-16)
+MAC_SPELL = {'flame-shield': {'manacost': 80}, 'fireball': {'range': 10},
+             'eye-of-vision': {'target': 'W2_ST_SELF'}, 'exorcism': {'target': 'W2_ST_POSITION'},
+             'raise-dead': {'target': 'W2_ST_POSITION'}}
 w('const w2_spell w2_spells[W2_NUM_SPELLS] = {')
 for sn in SPELL_ORDER:
-    sd = SPDEF['spell-' + sn]
+    sd = dict(SPDEF['spell-' + sn]); sd.update(MAC_SPELL.get(sn, {}))
     tgt, eff, fl, p1, p2 = SP_MANUAL[sn]
+    tgt = MAC_SPELL.get(sn, {}).get('target', tgt)
     rng = sd.get('range'); rng = NONE if rng == 'infinite' else int(rng)
     up = UPGIDX.get(sd.get('depend-upgrade'), NONE)
     mi = MISSILEIDX.get(SP_MISSILE.get(sn), NONE)
@@ -1177,11 +1183,6 @@ const w2_game_speed w2_game_speeds[] = {
   { "slowest", 15 }, { "slow", 22 }, { "normal", 30 }, { "fast", 45 }, { "fastest", 60 },
 };
 const uint8_t w2_num_game_speeds = 5;
-
-const w2_unit_type *w2_unit(unsigned id)
-{
-    return id < W2_NUM_UNIT_TYPES ? &w2_unit_types[id] : NULL;
-}
 
 const w2_anim_step *w2_anim(unsigned set, unsigned kind, unsigned *count)
 {

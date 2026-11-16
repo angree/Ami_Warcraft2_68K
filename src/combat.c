@@ -1,9 +1,11 @@
 /* combat.c - attack orders, target acquisition, damage, death, combat commands.
  * See combat.h for the rules and the assumptions about unit.c / move.c. Plain C, no floats. */
 #include <string.h>
+#include "amiga_uclock.h"
 #include "w2.h"
 #include "combat.h"
 #include "unit.h"
+#include "spells.h"
 
 #define ALERT_PERIOD   (W2_CYCLES_PER_SECOND_NORMAL * 10u)   /* "under attack" at most every 10 s */
 #define MOVE_FAIL_MAX  3                                     /* move says "arrived" but out of range */
@@ -18,6 +20,11 @@ static uint8_t  c_struck[W2_MAX_UNITS];      /* hit already delivered in this sw
 static uint8_t  c_last[W2_MAX_UNITS];        /* anim_step seen last cycle */
 static uint8_t  c_fail[W2_MAX_UNITS];
 static uint8_t  c_ptx[W2_MAX_UNITS], c_pty[W2_MAX_UNITS];   /* patrol: the other end */
+/* units on the map sorted by their top row (sorted_build) */
+static uint16_t c_sorted[W2_MAX_UNITS];
+static uint16_t c_rows[W2_MAP_MAX + 1];
+static uint32_t c_sorted_cycle = 0xFFFFFFFFu;
+static uint16_t c_sorted_hi;
 static uint16_t c_acq_target[W2_MAX_UNITS];
 static uint32_t c_acq_cycle[W2_MAX_UNITS];
 
@@ -36,12 +43,13 @@ void combat_reset(void)
 	memset(c_resume, 0, sizeof c_resume); memset(c_hold, 0, sizeof c_hold);
 	memset(c_swing, 0, sizeof c_swing); memset(c_struck, 0, sizeof c_struck);
 	memset(c_last, 0, sizeof c_last); memset(c_fail, 0, sizeof c_fail);
-	memset(c_rtag, 0xFF, sizeof c_rtag); memset(c_acq_target, 0xFF, sizeof c_acq_target);
+	memset(c_rtag, 0xFF, sizeof c_rtag); memset(c_acq_target, 0xFF, sizeof c_acq_target); c_sorted_cycle = 0xFFFFFFFFu;
 	memset(c_acq_cycle, 0, sizeof c_acq_cycle);
 	memset(g_score, 0, sizeof g_score); memset(g_kills, 0, sizeof g_kills);
 	memset(g_upg_valid, 0, sizeof g_upg_valid);
 	g_last_alert = 0; g_alerted = 0;
 	missile_reset();
+	spells_reset();
 }
 
 uint32_t combat_score(int p) { return (p >= 0 && p < W2_MAX_PLAYERS) ? g_score[p] : 0; }
@@ -143,6 +151,7 @@ int combat_weapon(int s, int *basic, int *piercing)
 	e = econ_stat(s, W2_STAT_RANGE);
 	if (e > 0) r = e;
 	p += w2.unit[s].damage_bonus;
+	if (spells_bloodlust(s)) { b *= 2; p *= 2; }     /* Mac 0x00131D9A / 0x00131E9E: doubled while +0x48 > 0 */
 	if (b < 0) b = 0;
 	if (p < 0) p = 0;
 	*basic = b; *piercing = p;
@@ -201,6 +210,8 @@ int combat_can_target(int s, int target)
 	if (b->kind == W2_KIND_MARKER || !b->hp) return 0;
 	if (!(a->can_target & layer_of(target))) return 0;
 	if ((b->flags & W2UF_SUBMARINE) && !(a->flags & (W2UF_SEE_SUBMARINE | W2UF_SUBMARINE))) return 0;
+	/* invisible: only its owner sees it (Mac visibility mask +0x29 = owner bit) */
+	if (w2.unit[target].owner != w2.unit[s].owner && spells_invisible(target)) return 0;
 	return 1;
 }
 
@@ -217,6 +228,29 @@ static int cannot_move(int s)
 }
 
 /* ---- acquisition --------------------------------------------------------------------------- */
+/* units on the map sorted by their top row, rebuilt once per cycle (counting sort, O(units + rows)) */
+
+static void sorted_build(void)
+{
+	uint16_t pos[W2_MAP_MAX + 1];
+	int sl, y;
+	memset(pos, 0, sizeof pos);
+	for (sl = 0; sl < w2.unit_hi; sl++) {
+		const W2Unit *u = &w2.unit[sl];
+		if (!(u->flags & W2_UF_ALIVE) || (u->flags & (W2_UF_INSIDE | W2_UF_HIDDEN | W2_UF_DYING))) continue;
+		pos[u->ty]++;
+	}
+	c_rows[0] = 0;
+	for (y = 0; y < W2_MAP_MAX; y++) c_rows[y + 1] = (uint16_t)(c_rows[y] + pos[y]);
+	memcpy(pos, c_rows, sizeof pos);
+	for (sl = 0; sl < w2.unit_hi; sl++) {
+		const W2Unit *u = &w2.unit[sl];
+		if (!(u->flags & W2_UF_ALIVE) || (u->flags & (W2_UF_INSIDE | W2_UF_HIDDEN | W2_UF_DYING))) continue;
+		c_sorted[pos[u->ty]++] = (uint16_t)sl;
+	}
+	c_sorted_cycle = w2.cycle; c_sorted_hi = w2.unit_hi;
+}
+
 int combat_acquire(int s)
 {
 	const W2Unit *u;
@@ -226,6 +260,7 @@ int combat_acquire(int s)
 	if (!combat_can_attack(s)) return -1;
 	u = &w2.unit[s]; t = ty(s);
 	if (t->xflags & W2UX_COWARD) return -1;
+	if (spells_invisible(s)) return -1;          /* an invisible unit does not auto-acquire (0x00120D14) */
 	r = (u->owner < W2_MAX_PLAYERS && w2.player[u->owner].control == W2_CTRL_COMPUTER) ? t->react_cpu : t->react_human;
 	maxr = combat_weapon(s, &b, &p);
 	minr = t->min_range;
@@ -238,23 +273,29 @@ int combat_acquire(int s)
 	if (y0 < 0) y0 = 0;
 	if (x1 >= w2.map.w) x1 = w2.map.w - 1;
 	if (y1 >= w2.map.h) y1 = w2.map.h - 1;
-	for (y = y0; y <= y1; y++) {
-		const uint16_t *g = &w2.map.occ_ground[y * w2.map.w];
-		const uint16_t *a = &w2.map.occ_air[y * w2.map.w];
-		for (x = x0; x <= x1; x++) {
-			int pass;
-			for (pass = 0; pass < 2; pass++) {
-				int c, d, pri;
-				if (pass == 0) { if (!(t->can_target & (W2_TGT_LAND | W2_TGT_SEA))) continue; c = g[x]; }
-				else { if (!(t->can_target & W2_TGT_AIR)) continue; c = a[x]; }
-				if (c == W2_NO_UNIT || c == last || c == best || c == s) continue;
-				last = c;
-				if (!unit_is_enemy(s, c) || !combat_can_target(s, c) || !unit_owner_sees(u->owner, c)) continue;
-				d = unit_dist_tiles(s, c);
-				if (d < minr || d > r || (fixed && d > maxr)) continue;
-				pri = ty(c)->priority;
-				if (pri > best_pri || (pri == best_pri && d < best_d)) { best = c; best_pri = pri; best_d = d; }
-			}
+	/* candidates from the row-sorted unit list (as the Mac's y-sorted list, 0x0012022E) instead of a
+	 * scan of every tile of the box: the cost follows the units near the box, not its area */
+	if (c_sorted_cycle != w2.cycle || c_sorted_hi != w2.unit_hi) sorted_build();
+	{
+		int i, e, ya = y0 - 3 < 0 ? 0 : y0 - 3;      /* a building's top row may lie above the box */
+		(void)x; (void)y; (void)last;
+		e = c_rows[y1 + 1];
+		for (i = c_rows[ya]; i < e; i++) {
+			int c = c_sorted[i], d, pri, tw, th;
+			const W2Unit *v = &w2.unit[c];
+			const w2_unit_type *vt;
+			if (c == s || !(v->flags & W2_UF_ALIVE) || (v->flags & (W2_UF_INSIDE | W2_UF_HIDDEN | W2_UF_DYING))) continue;
+			vt = ty(c);
+			if (!vt) continue;
+			tw = vt->tile_w ? vt->tile_w : 1; th = vt->tile_h ? vt->tile_h : 1;
+			if (v->tx > x1 || v->tx + tw - 1 < x0 || v->ty > y1 || v->ty + th - 1 < y0) continue;
+			if (v->flags & W2_UF_AIR) { if (!(t->can_target & W2_TGT_AIR)) continue; }
+			else if (!(t->can_target & (W2_TGT_LAND | W2_TGT_SEA))) continue;
+			if (!unit_is_enemy(s, c) || !combat_can_target(s, c) || !unit_owner_sees(u->owner, c)) continue;
+			d = unit_dist_tiles(s, c);
+			if (d < minr || d > r || (fixed && d > maxr)) continue;
+			pri = vt->priority;
+			if (pri > best_pri || (pri == best_pri && d < best_d)) { best = c; best_pri = pri; best_d = d; }
 		}
 	}
 	c_acq_target[s] = (uint16_t)(best < 0 ? W2_NO_UNIT : best);
@@ -302,6 +343,7 @@ static void strike(int s, int target, int gx, int gy)
 	if (target >= 0) { unit_center(target, &dx, &dy); }
 	else { dx = gx * W2_TILE + W2_TILE / 2; dy = gy * W2_TILE + W2_TILE / 2; }
 	unit_set_dir_to(s, dx, dy);
+	spells_break_invis(s);                       /* attacking ends invisibility (0x001201CC) */
 	if (t->missile >= W2M_NONE || t->missile >= W2_NUM_MISSILES) {
 		if (target >= 0 && alive(target)) {
 			combat_weapon(s, &b, &p);
@@ -493,6 +535,7 @@ void unit_damage(int v, int amount, int attacker)
 	u = &w2.unit[v]; t = ty(v);
 	if (!t || (t->xflags & W2UX_INDESTRUCTIBLE)) return;
 	att_ok = attacker >= 0 && attacker < W2_MAX_UNITS && attacker != v && (w2.unit[attacker].flags & W2_UF_ALIVE);
+	if (spells_unholy(v)) amount = 0;            /* unholy armor: DamageUnit 0x00132148 ignores the hit */
 	if (amount > 0) {
 		if ((int)u->hp <= amount) {
 			u->hp = 0;
@@ -655,12 +698,15 @@ void cmd_smart(int s, int tx, int ty_, int target)
 	if (!ok_slot(s)) return;
 	u = &w2.unit[s]; t = ty(s);
 	if (target == W2_NO_UNIT || target == s || !(target >= 0 && target < W2_MAX_UNITS && alive(target))) target = -1;
+	if (transport_smart(s, tx, ty_, target)) return;     /* boarding / landing (transport.c) */
 	if (cannot_move(s)) {   /* towers: attack; other buildings: nothing (rally points are not in W2) */
 		if (target >= 0 && unit_is_enemy(s, target) && combat_can_attack(s) && combat_can_target(s, target)) cmd_attack(s, target);
 		return;
 	}
 	if (target >= 0) {
 		tt = ty(target);
+		/* demolition squad / sappers (UDTA right-mouse action 5): right-click on an enemy = blow it up */
+		if (t->rmb_action == W2_RMB_DEMOLISH && unit_is_enemy(s, target) && cmd_demolish(s, target, tx, ty_)) return;
 		if (unit_is_enemy(s, target)) {
 			if (combat_can_attack(s) && combat_can_target(s, target)) { cmd_attack(s, target); return; }
 			cmd_move(s, tx, ty_);

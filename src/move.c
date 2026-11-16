@@ -24,6 +24,7 @@
 #include "move.h"
 #include "unit.h"
 #include "combat.h"
+#include "transport.h"
 
 #define MV_PATH_MAX   64      /* planned steps kept per unit; a longer route is re-planned at the end */
 #define MV_GIVEUP     8       /* failures in a row before giving up */
@@ -37,7 +38,9 @@ int move_search_quota = 3;
 /* ---- step state ---- */
 static uint8_t  st_on[W2_MAX_UNITS];      /* MOVE sequence playing */
 static uint8_t  st_dir[W2_MAX_UNITS];
-static uint8_t  st_px[W2_MAX_UNITS];
+static uint8_t  st_mul[W2_MAX_UNITS];     /* 1, or 2 for a ship's 2-tile step */
+static uint8_t  st_px[W2_MAX_UNITS];      /* pixels of the step done */
+static uint8_t  st_base[W2_MAX_UNITS];    /* pixels done in earlier loops of the MOVE animation (2-tile steps) */
 static uint8_t  st_dx[W2_MAX_UNITS], st_dy[W2_MAX_UNITS];   /* destination tile */
 static uint32_t st_tick[W2_MAX_UNITS];    /* cycle + 1 of the last move_tick */
 static uint32_t st_last[W2_MAX_UNITS];    /* cycle + 1 of the last step start */
@@ -67,6 +70,9 @@ static uint32_t sw_cycle;                 /* cycle + 1 of the last reservation s
 void move_reset_all(void)
 {
 	memset(st_on, 0, sizeof st_on); sw_cycle = 0;
+	memset(st_mul, 0, sizeof st_mul);
+	path_terrain_reset();
+	transport_reset();
 	memset(st_tick, 0, sizeof st_tick); memset(st_last, 0, sizeof st_last);
 	memset(mv_len, 0, sizeof mv_len); memset(mv_idx, 0, sizeof mv_idx); memset(mv_active, 0, sizeof mv_active);
 	memset(mv_wait, 0, sizeof mv_wait); memset(mv_detour, 0, sizeof mv_detour); memset(mv_fail, 0, sizeof mv_fail); memset(mv_retry, 0, sizeof mv_retry);
@@ -122,8 +128,8 @@ static int anim_px(int slot)
 	unsigned n, i; int p = 0;
 	const w2_anim_step *a = w2_unit_anim(u->type, W2_ANIM_MOVE, &n);
 	if (!a || !n) {                         /* type without a MOVE animation: 4 px per cycle */
-		if (st_tick[slot] != w2.cycle + 1) { st_tick[slot] = w2.cycle + 1; return st_px[slot] + 4; }
-		return st_px[slot];
+		if (st_tick[slot] != w2.cycle + 1) { st_tick[slot] = w2.cycle + 1; return st_px[slot] - st_base[slot] + 4; }
+		return st_px[slot] - st_base[slot];
 	}
 	if (u->anim_kind != W2_ANIM_MOVE) return -1;
 	if (u->anim_wait == 0) return 0;        /* restarted, step 0 not entered yet */
@@ -158,10 +164,18 @@ void move_tick(int slot)
 	int p, d;
 	W2Unit *u = &w2.unit[slot];
 	sweep();
+	if (u->flags & W2_UF_INSIDE) transport_inside_tick(slot);   /* carried: stays inside, dies with the ship */
 	if (!st_on[slot]) return;
 	if (!on_map(slot)) { move_release(slot); return; }
 	p = anim_px(slot);
-	if (p < 0 || p < st_px[slot] || p >= W2_TILE) { tile_reached(slot); return; }   /* done / wrapped / stopped */
+	if (p < 0) { tile_reached(slot); return; }               /* MOVE animation stopped */
+	p += st_base[slot];
+	if (p < st_px[slot]) {                                    /* the loop wrapped */
+		/* a 2-tile step plays a 32-px loop twice (the original's ship loops are 64 px long) */
+		if (st_mul[slot] == 2 && !st_base[slot]) { st_base[slot] = st_px[slot]; p += st_base[slot]; }
+		else { tile_reached(slot); return; }
+	}
+	if (p >= W2_TILE * st_mul[slot]) { tile_reached(slot); return; }   /* done */
 	st_px[slot] = (uint8_t)p;
 	d = st_dir[slot];
 	u->ox = (int8_t)(w2_dir_dx[d] * p);
@@ -171,9 +185,11 @@ void move_tick(int slot)
 static void step_start(int slot, int d)
 {
 	W2Unit *u = &w2.unit[slot];
-	int nx = u->tx + w2_dir_dx[d], ny = u->ty + w2_dir_dy[d];
+	int m = (d & PATH_STEP2) ? 2 : 1, nx, ny;
+	d &= 7;
+	nx = u->tx + w2_dir_dx[d] * m; ny = u->ty + w2_dir_dy[d] * m;
 	occ_of(slot)[ny * w2.map.w + nx] = (uint16_t)slot;
-	st_on[slot] = 1; st_dir[slot] = (uint8_t)d; st_px[slot] = 0;
+	st_on[slot] = 1; st_dir[slot] = (uint8_t)d; st_px[slot] = 0; st_base[slot] = 0; st_mul[slot] = (uint8_t)m;
 	st_dx[slot] = (uint8_t)nx; st_dy[slot] = (uint8_t)ny;
 	st_last[slot] = w2.cycle + 1;
 	st_tick[slot] = w2.cycle + 1;
@@ -258,6 +274,8 @@ static int goal_step(int slot, int gx, int gy, int gw, int gh, int range, int ta
 	if (gx >= w2.map.w) gx = w2.map.w - 1;
 	if (gy >= w2.map.h) gy = w2.map.h - 1;
 	if (range < 0) range = 0;
+	mc = move_class(slot);
+	if (mc == MC_SEA && range == 0 && gw == 1 && gh == 1) { gx &= ~1; gy &= ~1; }   /* ships: even grid */
 
 	/* goal bookkeeping (a new goal drops the old plan; a moving target re-plans now and then) */
 	if (!mv_active[slot] || mv_gr[slot] != range || mv_target[slot] != (uint16_t)target ||
@@ -274,7 +292,6 @@ static int goal_step(int slot, int gx, int gy, int gw, int gh, int range, int ta
 	if (in_range(slot)) { finish(slot); return 1; }
 	if (mv_retry[slot]) { mv_retry[slot]--; set_still(slot); return 0; }
 
-	mc = move_class(slot);
 	occ = occ_of(slot);
 	if (mv_idx[slot] >= mv_len[slot] || mv_ex[slot] != u->tx || mv_ey[slot] != u->ty || mv_detour[slot]) {
 		int n, fl = 0, rem = -1;
@@ -297,15 +314,18 @@ static int goal_step(int slot, int gx, int gy, int gw, int gh, int range, int ta
 	}
 
 	d = mv_dirs[slot][mv_idx[slot]];
-	nx = u->tx + w2_dir_dx[d]; ny = u->ty + w2_dir_dy[d];
-	if (!move_tile_ok(mc, nx, ny) || !move_diag_ok(mc, u->tx, u->ty, d)) {   /* terrain changed */
-		set_still(slot);
-		return fail(slot);
+	{
+		int m = (d & PATH_STEP2) ? 2 : 1, d7 = d & 7;
+		nx = u->tx + w2_dir_dx[d7] * m; ny = u->ty + w2_dir_dy[d7] * m;
+		if (!move_tile_ok(mc, nx, ny) || (m == 1 && !move_diag_ok(mc, u->tx, u->ty, d7))) {   /* terrain changed */
+			set_still(slot);
+			return fail(slot);
+		}
 	}
 	o = occ[ny * w2.map.w + nx];
 	if (o != W2_NO_UNIT && o != slot) {
 		set_still(slot);
-		u->dir = (uint8_t)d;
+		u->dir = (uint8_t)(d & 7);
 		if (!(w2.unit[o].flags & W2_UF_BUILDING) && move_is_active(o)) {
 			int prog = move_is_progressing(o);
 			if (++mv_wait[slot] < (prog ? MV_WAIT_LONG : 2 + (slot & 3))) return 0;
@@ -378,12 +398,19 @@ void ord_follow(int slot)
 	else if (r < 0) u->timer = 30;          /* cannot reach now: retry later, keep the order */
 }
 
+/* The Mac runs order logic only when the animation yields (SPEC_MECHANICS §1): an idle unit looks
+ * for a target once per loop of its Still animation (about every 5 cycles), not every cycle. */
+static int idle_yield(int slot)
+{
+	return w2.unit[slot].anim_kind != W2_ANIM_STILL || unit_anim_done(slot);
+}
+
 void ord_stand(int slot)
 {
 	if (mv_active[slot]) move_stop(slot);
 	move_tick(slot);
 	if (!st_on[slot]) set_still(slot);
-	if (!st_on[slot] && armed(slot) && unit_thinks(slot)) {    /* combat_engage keeps STAND on its tile */
+	if (!st_on[slot] && armed(slot) && unit_thinks(slot) && idle_yield(slot)) {    /* combat_engage keeps STAND on its tile */
 		int t = combat_acquire(slot);
 		if (t >= 0) combat_engage(slot, t);
 	}
@@ -395,7 +422,7 @@ void ord_still(int slot)
 	move_tick(slot);
 	if (st_on[slot]) return;
 	set_still(slot);
-	if (armed(slot) && unit_thinks(slot)) {
+	if (armed(slot) && unit_thinks(slot) && idle_yield(slot)) {
 		int t = combat_acquire(slot);
 		if (t >= 0) combat_engage(slot, t);
 	}

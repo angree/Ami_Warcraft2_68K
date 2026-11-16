@@ -1780,14 +1780,14 @@ const uint16_t w2_num_dependencies = 104;
 const w2_spell w2_spells[W2_NUM_SPELLS] = {
   { "Holy Vision", 70, N, W2_ST_POSITION, W2_SE_REVEAL, W2UP_HOLY_VISION, N, 148, 0, 0, 25 },
   { "Healing", 6, 6, W2_ST_UNIT, W2_SE_HEAL, W2UP_HEALING, W2M_HEAL_EFFECT, 149, W2SF_ORGANIC_ONLY|W2SF_NO_BUILDING|W2SF_REPEAT, 1, 0 },
-  { "Exorcism", 4, 10, W2_ST_UNIT, W2_SE_DAMAGE_UNDEAD, W2UP_EXORCISM, W2M_EXORCISM, 150, W2SF_UNDEAD_ONLY|W2SF_NO_BUILDING|W2SF_REPEAT, 1, 0 },
-  { "Fireball", 100, 8, W2_ST_POSITION, W2_SE_MISSILE, W2UP_FIREBALL, W2M_FIREBALL, 144, 0, 20, 0 },
+  { "Exorcism", 4, 10, W2_ST_POSITION, W2_SE_DAMAGE_UNDEAD, W2UP_EXORCISM, W2M_EXORCISM, 150, W2SF_UNDEAD_ONLY|W2SF_NO_BUILDING|W2SF_REPEAT, 1, 0 },
+  { "Fireball", 100, 10, W2_ST_POSITION, W2_SE_MISSILE, W2UP_FIREBALL, W2M_FIREBALL, 144, 0, 20, 0 },
   { "Slow", 50, 10, W2_ST_UNIT, W2_SE_BUFF, W2UP_SLOW, N, 151, W2SF_NO_BUILDING, 0, 1000 },
-  { "Flame Shield", 50, 6, W2_ST_UNIT, W2_SE_FLAME_SHIELD, W2UP_FLAME_SHIELD, W2M_FLAME_SHIELD, 152, W2SF_NO_BUILDING|W2SF_NO_AIR, 1, 600 },
+  { "Flame Shield", 80, 6, W2_ST_UNIT, W2_SE_FLAME_SHIELD, W2UP_FLAME_SHIELD, W2M_FLAME_SHIELD, 152, W2SF_NO_BUILDING|W2SF_NO_AIR, 1, 600 },
   { "Invisibility", 200, 6, W2_ST_UNIT, W2_SE_BUFF, W2UP_INVISIBILITY, N, 153, W2SF_NO_BUILDING, 0, 2000 },
   { "Polymorph", 200, 10, W2_ST_UNIT, W2_SE_POLYMORPH, W2UP_POLYMORPH, N, 154, W2SF_ORGANIC_ONLY, 0, 0 },
   { "Blizzard", 25, 12, W2_ST_POSITION, W2_SE_AREA, W2UP_BLIZZARD, W2M_BLIZZARD, 155, W2SF_REPEAT, 11, 5 },
-  { "Eye of Kilrogg", 70, 6, W2_ST_POSITION, W2_SE_EYE, W2UP_EYE_OF_KILROGG, N, 156, 0, 0, 765 },
+  { "Eye of Kilrogg", 70, 6, W2_ST_SELF, W2_SE_EYE, W2UP_EYE_OF_KILROGG, N, 156, 0, 0, 765 },
   { "Bloodlust", 50, 6, W2_ST_UNIT, W2_SE_BUFF, W2UP_BLOODLUST, N, 157, W2SF_ORGANIC_ONLY, 0, 1000 },
   { "Runes", 200, 10, W2_ST_POSITION, W2_SE_RUNES, W2UP_RUNES, W2M_RUNE, 143, W2SF_NO_BUILDING, 50, 2000 },
   { "Death Coil", 100, 10, W2_ST_POSITION, W2_SE_MISSILE, W2UP_DEATH_COIL, W2M_DEATH_COIL, 158, W2SF_ORGANIC_ONLY, 50, 0 },
@@ -2612,11 +2612,6 @@ const w2_game_speed w2_game_speeds[] = {
   { "slowest", 15 }, { "slow", 22 }, { "normal", 30 }, { "fast", 45 }, { "fastest", 60 },
 };
 const uint8_t w2_num_game_speeds = 5;
-
-const w2_unit_type *w2_unit(unsigned id)
-{
-    return id < W2_NUM_UNIT_TYPES ? &w2_unit_types[id] : NULL;
-}
 
 const w2_anim_step *w2_anim(unsigned set, unsigned kind, unsigned *count)
 {

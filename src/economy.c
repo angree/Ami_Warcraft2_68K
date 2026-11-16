@@ -346,15 +346,106 @@ static int deps_met(int player, int kind, int id)
 	return (has & ~fail) != 0;
 }
 
+/* ------------------------------------------------------------------------------------------- */
+/* allowances (PUD ALOW / the campaign's per-level masks)                                        */
+
+/* Bit of the PUD ALOW "units and buildings" mask for a unit type, -1 = not restricted. Mac 1.23:
+ * every train/build/upgrade-to button predicate tests one fixed bit of A5+6A8A[player] (button table
+ * A5-0x6C00.., predicates 0x161B7C.. / 0x161E34..). Both races share a bit; a ranger/berserker is an
+ * archer/axethrower, a paladin/ogre-mage a knight/ogre, an attack peasant a peasant. Guard and cannon
+ * towers and oil platforms have no bit of their own. */
+static int unit_allow_bit(int type)
+{
+	switch (type) {
+	case 0x00: case 0x01: return 0;                    /* footman / grunt */
+	case 0x02: case 0x03: case 0x10: case 0x11: return 1;   /* worker (+ attack worker) */
+	case 0x04: case 0x05: return 2;                    /* ballista / catapult */
+	case 0x06: case 0x07: case 0x0C: case 0x0D: return 3;   /* knight / ogre (+ paladin / ogre-mage) */
+	case 0x08: case 0x09: case 0x12: case 0x13: return 4;   /* archer / axethrower (+ ranger / berserker) */
+	case 0x0A: case 0x0B: return 5;                    /* mage / death knight */
+	case 0x1A: case 0x1B: return 6;                    /* tanker */
+	case 0x1E: case 0x1F: return 7;                    /* destroyer */
+	case 0x1C: case 0x1D: return 8;                    /* transport */
+	case 0x20: case 0x21: return 9;                    /* battleship / juggernaught */
+	case 0x26: case 0x27: return 10;                   /* submarine / turtle */
+	case 0x28: case 0x29: return 11;                   /* flying machine / zeppelin */
+	case 0x2A: case 0x2B: return 12;                   /* gryphon rider / dragon */
+	case 0x0E: case 0x0F: return 14;                   /* demolition squad / sappers */
+	case 0x46: case 0x47: return 15;                   /* aviary / roost */
+	case 0x3A: case 0x3B: return 16;                   /* farm */
+	case 0x3C: case 0x3D: return 17;                   /* barracks */
+	case 0x4C: case 0x4D: return 18;                   /* lumber mill */
+	case 0x42: case 0x43: return 19;                   /* stables / ogre mound */
+	case 0x50: case 0x51: return 20;                   /* mage tower / temple */
+	case 0x4E: case 0x4F: return 21;                   /* foundry */
+	case 0x54: case 0x55: return 22;                   /* refinery */
+	case 0x44: case 0x45: return 23;                   /* inventor / alchemist */
+	case 0x3E: case 0x3F: return 24;                   /* church / altar */
+	case 0x40: case 0x41: return 25;                   /* scout tower */
+	case 0x4A: case 0x4B: return 26;                   /* town hall / great hall */
+	case 0x58: case 0x59: return 27;                   /* keep / stronghold */
+	case 0x5A: case 0x5B: return 28;                   /* castle / fortress */
+	case 0x52: case 0x53: return 29;                   /* blacksmith */
+	case 0x48: case 0x49: return 30;                   /* shipyard */
+	case 0x67: case 0x68: return 31;                   /* wall */
+	default: return -1;
+	}
+}
+
+/* Upgrade (UGRD id) -> bit of the ALOW "upgrades allowed" mask (A5+6B8A, predicate 0x161704: a
+ * levelled upgrade tests 1 << (base + level)) or, with ECON_ALLOW_SPELL set, of the "spells
+ * allowed" mask (A5+6B0A, research predicate 0x161ACA, bit = button byte 14). -1 = not restricted. */
+#define ECON_ALLOW_SPELL 0x40
+static int upg_allow_bit(int u)
+{
+	static const int8_t k[W2_NUM_UPGRADES] = {
+		2, 3, 2, 3, 0, 1, 0, 1, 4, 5, 4, 5,                     /* weapons, arrows/axes, shields */
+		6, 7, 6, 7, 8, 9, 8, 9, 12, 13, 12, 13,                 /* ship cannon, ship armor, siege */
+		16, 17, 18, 19, 16, 17, 18, 19,                         /* ranger/berserker line */
+		0x40 | 20, 0x40 | 20,                                   /* ogre-mage, paladin */
+		0x40 | 0, 0x40 | 1, 0x40 | 3, 0x40 | 4, 0x40 | 5, 0x40 | 6, 0x40 | 7, 0x40 | 8, 0x40 | 9,
+		0x40 | 10, 0x40 | 11, 0x40 | 13, 0x40 | 14, 0x40 | 15, 0x40 | 16, 0x40 | 17, 0x40 | 18, 0x40 | 19
+	};
+	return (u >= 0 && u < (int)W2_NUM_UPGRADES) ? k[u] : -1;
+}
+
+static uint32_t g_allow_upg[W2_MAX_PLAYERS];
+static uint8_t  g_allow_upg_set;   /* 0: never set = everything allowed */
+
+void econ_set_allowed_upgrades(int player, uint32_t mask)
+{
+	int p;
+	if (!g_allow_upg_set) { for (p = 0; p < W2_MAX_PLAYERS; p++) g_allow_upg[p] = 0xFFFFFFFFu; g_allow_upg_set = 1; }
+	if (player < 0) { for (p = 0; p < W2_MAX_PLAYERS; p++) g_allow_upg[p] = mask; return; }
+	if (player < W2_MAX_PLAYERS) g_allow_upg[player] = mask;
+}
+
+int econ_unit_permitted(int player, int type)
+{
+	int b = unit_allow_bit(type);
+	if (b < 0 || player < 0 || player >= W2_MAX_PLAYERS) return 1;
+	return (int)((w2.player[player].allowed_units >> b) & 1u);
+}
+
+int econ_upgrade_permitted(int player, int upg)
+{
+	int b = upg_allow_bit(upg);
+	if (b < 0 || player < 0 || player >= W2_MAX_PLAYERS) return 1;
+	if (b & ECON_ALLOW_SPELL) return (int)((w2.player[player].allowed_spells >> (b & 31)) & 1u);
+	return !g_allow_upg_set || (int)((g_allow_upg[player] >> b) & 1u);
+}
+
 int econ_allowed_unit(int player, int type)
 {
 	if (!w2_unit((unsigned)type)) return 0;
+	if (!econ_unit_permitted(player, type)) return 0;
 	return deps_met(player, W2_DEP_UNIT, type);
 }
 
 int econ_allowed_upgrade(int player, int upg)
 {
 	if (upg < 0 || upg >= (int)W2_NUM_UPGRADES) return 0;
+	if (!econ_upgrade_permitted(player, upg)) return 0;
 	return deps_met(player, W2_DEP_UPGRADE, upg);
 }
 

@@ -27,7 +27,10 @@
 #include "amiga_gfx.h"
 #include "game.h"
 #include "snd.h"
+#include "transport.h"
+#include "spells.h"
 #include "unit.h"
+#include "campaign.h"
 
 /* ------------------------------------------------------------------ layout (hires units) */
 #define PANEL_W      176
@@ -65,8 +68,8 @@ static const short g_res_x[3] = { 264, 352, 440 };    /* gold, lumber, oil widge
 #define GM_Y         152
 #define GM_W         176
 #define GM_H         176
-#define GM_N         4
-static const short g_gm_by[GM_N] = { 194, 224, 254, 284 };
+#define GM_N         5
+static const short g_gm_by[GM_N] = { 188, 213, 238, 263, 288 };
 #define GM_BX        (GM_X + 24)
 /* Options page (g_menu == 2): 4 slider rows, then an OK button */
 #define OPT_N        4
@@ -589,10 +592,9 @@ static void mark(int px, int py) { g_mark_x = px; g_mark_y = py; g_mark_t = 12; 
 
 static void cast(int s, int spell, int target, int tx, int ty)
 {
-	/* NOTE contract: there is no cmd_cast yet - the order is set directly (queue_type = spell id). */
-	if (spell >= (int)W2_NUM_SPELLS || w2.unit[s].mana < w2_spells[spell].mana) return;
-	unit_set_order(s, W2_ORD_CAST, target >= 0 ? target : W2_NO_UNIT, tx, ty);
-	w2.unit[s].queue_type = (uint8_t)spell;
+	if (spell >= (int)W2_NUM_SPELLS) return;
+	if (w2.unit[s].mana < spells_mana_cost(spell)) { ui_message("Not enough mana."); return; }
+	cmd_cast(s, spell, target, tx, ty);       /* checks mana, research, range rules (spells.c) */
 }
 
 static void ack(void)
@@ -608,7 +610,14 @@ static void do_button(const w2_button *b)
 	click_sound();
 	switch (b->action) {
 	case W2B_MOVE: case W2B_ATTACK: case W2B_PATROL: case W2B_ATTACK_GROUND: case W2B_HARVEST:
-	case W2B_REPAIR: case W2B_UNLOAD: case W2B_DEMOLISH:
+	case W2B_UNLOAD:   /* Mac f9_5594: a docked, waiting transport unloads at once, otherwise ask where */
+		if (transport_waiting(lead) || transport_docked(lead)) {
+			for (i = 0; i < w2.select_n; i++) if (transport_is(w2.select[i]))
+				unit_set_order(w2.select[i], W2_ORD_UNLOAD, W2_NO_UNIT, w2.unit[w2.select[i]].tx, w2.unit[w2.select[i]].ty);
+			ack(); break;
+		}
+		g_mode = MODE_TARGET; g_tgt = b; break;
+	case W2B_REPAIR: case W2B_DEMOLISH:
 		g_mode = MODE_TARGET; g_tgt = b; break;
 	case W2B_CAST_SPELL:
 		if (b->arg < W2_NUM_SPELLS && w2_spells[b->arg].target == W2_ST_SELF) {
@@ -1143,7 +1152,7 @@ static void draw_menu_button(void)
 	text_c(FONT_GAME, g_menu_press ? FC_WHITE : FC_YELLOW, MENU_BX + MENU_BW / 2 + pressed * 2, MENU_BY + 4 + pressed * 2, "Menu (F10)");
 }
 
-static const char *const g_gm_label[GM_N] = { "Return to Game (Esc)", "Options (O)", "Quit to Menu (Q)", "Exit Program (X)" };
+static const char *const g_gm_label[GM_N] = { "Return to Game (Esc)", "Options (O)", "Objectives (B)", "Quit to Menu (Q)", "Exit Program (X)" };
 static const char *const g_opt_label[OPT_N] = { "Sound Volume", "Music Volume", "Game Speed", "Scroll Speed" };
 static const char *const g_opt_short[OPT_N] = { "Sound", "Music", "Speed", "Scroll" };
 static int g_opt_drag = -1, g_opt_dirty;
@@ -1170,10 +1179,37 @@ static void gm_button(int x, int y, int i, const char *label)
 	       x + MENU_BW / 2 + pressed * 2, y + 4 + pressed * 2, label);
 }
 
+/* the scenario objectives page (g_menu == 3): War Strings 53 title, the level's objective text
+ * (War Strings 54 via campaign.c), word-wrapped into the panel */
+static void draw_objectives(void)
+{
+	const char *t = camp_objectives(), *title = assets_string(53, 0);
+	char line[64];
+	int y = GM_Y + 40, w = GM_W - 28;
+	text_c(FONT_LARGE, FC_YELLOW, GM_X + GM_W / 2, GM_Y + 14, title && *title ? title : "Objectives");
+	while (t && *t && y < OPT_OK_Y - 12) {
+		int len = 0, brk = -1;
+		while (t[len] && t[len] != '\n' && len < (int)sizeof line - 1) {
+			line[len] = t[len]; line[len + 1] = 0;
+			if (t[len] == ' ') brk = len;
+			if (assets_text_width(FONT_GAME, line) > w && brk > 0) { len = brk; break; }
+			len++;
+		}
+		line[len] = 0;
+		text(FONT_GAME, FC_WHITE, GM_X + 14, y, line);
+		y += assets_font_height(FONT_GAME) + 3;
+		t += len;
+		while (*t == ' ') t++;
+		if (*t == '\n') t++;
+	}
+	gm_button(GM_BX, OPT_OK_Y, 0, "OK (Esc)");
+}
+
 static void draw_game_menu(void)
 {
 	int i;
 	draw_gfu(g_art.info, g_art.info_n, 1, GM_X, GM_Y, &g_full);
+	if (g_menu == 3) { draw_objectives(); return; }
 	if (g_menu == 2) {
 		static const char *const spd[5] = { "Slowest", "Slow", "Normal", "Fast", "Fastest" };
 		text_c(FONT_LARGE, FC_YELLOW, GM_X + GM_W / 2, GM_Y + 14, "Options");
@@ -1360,9 +1396,10 @@ static void menu_choose(int i)
 	click_sound();
 	g_gm_press = -1;
 	if (i == 1) { g_menu = 2; g_opt_drag = -1; return; }
+	if (i == 2) { g_menu = 3; return; }
 	g_menu = 0;
-	if (i == 2) game_end(3);
-	else if (i == 3) { g_quit = 1; game_quit(); }
+	if (i == 3) game_end(3);
+	else if (i == 4) { g_quit = 1; game_quit(); }
 }
 
 /* set slider row i from the mouse x; values apply at once (snd/main loop read w2_cfg live) */
@@ -1408,17 +1445,37 @@ static int opt_event(const AmigaGfxEvent *e)
 	return 1;
 }
 
+/* objectives page: OK / Esc / Return back to the game menu */
+static int obj_event(const AmigaGfxEvent *e)
+{
+	int on_ok = in_rect(g_mx, g_my, GM_BX, OPT_OK_Y, MENU_BW, MENU_BH);
+	if (e->type == AMIGAGFX_EV_KEY) {
+		int k = e->code & 0x7F;
+		if (e->code & 0x80) return 1;
+		if (k == K_ESC || k == K_F10 || k == 0x44 || key_char(k) == 'b') { click_sound(); g_menu = 1; g_gm_press = -1; }
+		return 1;
+	}
+	if (e->type == AMIGAGFX_EV_MOUSEDOWN && e->code == AMIGAGFX_BUTTON_LEFT && on_ok) g_gm_press = 0;
+	else if (e->type == AMIGAGFX_EV_MOUSEUP && e->code == AMIGAGFX_BUTTON_LEFT) {
+		if (g_gm_press == 0 && on_ok) { click_sound(); g_menu = 1; }
+		g_gm_press = -1;
+	}
+	return 1;
+}
+
 static int gm_event(const AmigaGfxEvent *e)
 {
 	int i;
 	if (g_menu == 2) return opt_event(e);
+	if (g_menu == 3) return obj_event(e);
 	if (e->type == AMIGAGFX_EV_KEY) {
 		int k = e->code & 0x7F, c = key_char(k);
 		if (e->code & 0x80) return 1;
 		if (k == K_ESC || k == K_F10 || c == 'r') menu_choose(0);
 		else if (c == 'o') menu_choose(1);
-		else if (c == 'q') menu_choose(2);
-		else if (c == 'x') menu_choose(3);
+		else if (c == 'b') menu_choose(2);
+		else if (c == 'q') menu_choose(3);
+		else if (c == 'x') menu_choose(4);
 		return 1;
 	}
 	for (i = 0; i < GM_N; i++) if (in_rect(g_mx, g_my, GM_BX, g_gm_by[i], MENU_BW, MENU_BH)) break;

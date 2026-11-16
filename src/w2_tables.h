@@ -35,7 +35,7 @@
 #define W2_CYCLES_PER_SECOND_NORMAL 30u  /* game cycles per second at "normal" speed (Stratagus/Wargus) */
 #define W2_TIME_UNIT_CYCLES     6u      /* 1 build/train/research time unit = 6 cycles (NIEPEWNE, see spec) */
 #define W2_MANA_MAX             255u
-#define W2_MANA_START           84u     /* initial mana of a new caster (Wargus) */
+#define W2_MANA_START           85u     /* initial mana of a new caster (Mac 0x16D3A8; Wargus 84) */
 #define W2_GOLD_PER_PUD_UNIT    2500u   /* PUD UNIT.data for gold mine/oil patch * 2500 = amount */
 #define W2_TILE_PX              32u
 
@@ -686,7 +686,8 @@ extern const w2_game_speed  w2_game_speeds[];
 extern const uint8_t        w2_num_game_speeds;
 
 /* ---- accessors ---------------------------------------------------------- */
-const w2_unit_type *w2_unit(unsigned id);                      /* NULL if id out of range */
+static inline const w2_unit_type *w2_unit(unsigned id)          /* NULL if id out of range (inline: hot on 68k) */
+{ return id < W2_NUM_UNIT_TYPES ? &w2_unit_types[id] : (const w2_unit_type *)0; }
 /* returns first step of animation kind for a unit type (NULL if none); *count = number of steps */
 const w2_anim_step *w2_unit_anim(unsigned unit_id, unsigned kind, unsigned *count);
 const w2_anim_step *w2_anim(unsigned set, unsigned kind, unsigned *count);

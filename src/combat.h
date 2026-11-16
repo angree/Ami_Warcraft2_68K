@@ -13,8 +13,10 @@
  *    <= ~42 px rating/4, minus armor, then the same roll. Launch adds target jitter (r&7)-3 per
  *    axis (two w2_rand() calls). NOT mirrored yet: the discarded Random() calls of some spell /
  *    missile routines (RE_NOTES §4 list) - needs per-routine RE.
- *  - bloodlust (x2) has no field in W2Unit: W2Unit.damage_bonus is added to piercing,
- *    armor_bonus to armor (for the spell module).
+ *  - spells (spells.c): bloodlust doubles basic' and piercing' (combat_weapon); unholy armor makes
+ *    unit_damage ignore the hit (the reaction still happens); an invisible unit does not auto-acquire,
+ *    cannot be targeted by other players' units and becomes visible when it strikes.
+ *    W2Unit.damage_bonus is added to piercing, armor_bonus to armor (unused by the original).
  *  - weapon upgrades add to BASIC damage (swords/axes, ship cannons, catapult/ballista), except
  *    archers/axethrowers/rangers/berserkers whose arrow/axe upgrades add to PIERCING; marksmanship
  *    turns a ranger's basic damage into piercing. Armor upgrades add to armor.
@@ -74,5 +76,20 @@ void missile_fire_dmg(int shooter, int missile_type, int sx, int sy, int dx, int
  * <= ~42 px rating/4; then minus armor (unless ignore_armor) and the CalcDamage roll.
  * layer_mask = W2_TGT_* layers hit. The attacker itself is never hit (Mac SplashDamageUnit 0x00129C54). */
 void combat_area_damage(int px, int py, int rating, int attacker, int layer_mask, int ignore_armor);
+
+/* spell missiles (the original's missile states 7..12; used by spells.c). Positions in map pixels.
+ *  MSP_EFFECT     visual only: missile_effect(type, x, y) plays the sprite's frames once (3 cycles each)
+ *  MSP_BREATH     fireball spell: dragon-breath missile from the shooter toward (x,y), half speed in the last
+ *                 50 px, rolls on and splashes 'arg' (40) every 8 steps, 5 times (no armor, air too)
+ *  MSP_SHIELD_GO  flame shield: fireball sprite flies to 'target', then MSP_SHIELD: 5 flames orbit the target
+ *                 for 512..527 cycles, each splashing 4 every 16 cycles (never the shielded unit)
+ *  MSP_BLIZZARD   one blizzard field at (x,y): a shard falls from up-left, splash 10, then 'arg' more shards
+ *  MSP_DND        death and decay at (x,y) +-2 tiles (random): 'arg' (10) splashes of 10, one per 27 cycles
+ *  MSP_WHIRL      whirlwind near (x,y) (+-64 px random): 'arg' (800) steps of 3 cycles, 1 px each, splash 4
+ *                 every other step, wanders to random points +-64 px around itself */
+enum { MSP_NONE, MSP_EFFECT, MSP_BREATH, MSP_SHIELD_GO, MSP_SHIELD, MSP_BLIZZARD, MSP_DND, MSP_WHIRL };
+void missile_effect(int type, int x, int y);
+void missile_spell(int kind, int shooter, int target, int x, int y, int arg);
+int  missile_count_kind(int kind);             /* live spell missiles of one kind (tests) */
 
 #endif

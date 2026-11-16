@@ -7,6 +7,7 @@
 #include "assets.h"
 #include "w2cfg.h"
 #include "unit.h"
+#include "economy.h"
 
 /* classify one tile from its MTXM value and the era's tile map group flags */
 static unsigned tile_flags(unsigned v)
@@ -123,6 +124,17 @@ int pud_load_mem(const uint8_t *d, uint32_t size)
 	}
 	s = sec(d, size, "SIDE", &len);
 	for (i = 0; s && i < W2_MAX_PLAYERS && (unsigned long)i < len; i++) w2.player[i].race = s[i] > 1 ? 0 : s[i];
+	/* ALOW (Mac f8_3B04: exactly 0x180 bytes = 6 x 16 u32: units, spells at start, spells allowed,
+	 * spells being researched, upgrades allowed, upgrades being researched). Absent = all allowed. */
+	econ_set_allowed_upgrades(-1, 0xFFFFFFFFu);
+	s = sec(d, size, "ALOW", &len);
+	if (s && len == 0x180) {
+		for (i = 0; i < W2_MAX_PLAYERS; i++) {
+			w2.player[i].allowed_units = (uint32_t)W2_LE32(s + i * 4);
+			w2.player[i].allowed_spells = (uint32_t)W2_LE32(s + 0x80 + i * 4);
+			econ_set_allowed_upgrades(i, (uint32_t)W2_LE32(s + 0x100 + i * 4));
+		}
+	}
 	s = sec(d, size, "SGLD", &len);
 	for (i = 0; s && i < W2_MAX_PLAYERS && (unsigned long)(i * 2 + 2) <= len; i++) w2.player[i].gold = (int32_t)W2_LE16(s + i * 2);
 	s = sec(d, size, "SLBR", &len);
@@ -156,6 +168,13 @@ int pud_load_mem(const uint8_t *d, uint32_t size)
 			continue;
 		}
 		if (w2.player[owner].control == W2_CTRL_NOBODY) continue;
+		/* the Mac converts every record to its owner's race (f8_3EDE: tables A5+0AE4 human /
+		 * A5+0B52 orc, chosen by SIDE): a human unit of an orc player becomes its orc equivalent */
+		if (owner < W2_NEUTRAL && w2.player[owner].race <= 1) {
+			const w2_unit_type *ut = w2_unit((unsigned)type);
+			if (ut && (ut->race == W2_RACE_HUMAN || ut->race == W2_RACE_ORC) && ut->race != (w2.player[owner].race ? W2_RACE_ORC : W2_RACE_HUMAN) &&
+			    ut->equiv != W2_NONE && w2_unit(ut->equiv)) type = ut->equiv;
+		}
 		slot = unit_create(type, owner, ux, uy);
 		if (slot < 0) continue;
 		if (type == W2U_GOLD_MINE || type == W2U_OIL_PATCH || type == W2U_HUMAN_OIL_PLATFORM || type == W2U_ORC_OIL_PLATFORM)

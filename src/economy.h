@@ -35,6 +35,15 @@ int  econ_find_depot(int slot, int kind);
 /* Number of workers currently inside a gold mine (0 for anything else). */
 int  econ_mine_workers(int mine);
 
+/* Allowances (PUD ALOW, campaign levels). Units/buildings: W2Player.allowed_units (ALOW bit order,
+ * both races share a bit); spells and the paladin/ogre-mage research: W2Player.allowed_spells (ALOW
+ * spell bit order, bit 20 = paladin/ogre-mage); weapon/armour/ship/siege/ranger upgrades: a mask
+ * kept here (ALOW "upgrades allowed" order). econ_allowed_unit/econ_allowed_upgrade test them first.
+ * player -1 = every player. Until the first call every upgrade is allowed. */
+void econ_set_allowed_upgrades(int player, uint32_t mask);
+int  econ_unit_permitted(int player, int type);     /* allowance only (no dependencies) */
+int  econ_upgrade_permitted(int player, int upg);
+
 /* Messages: War Strings table 1 indices of the original texts. */
 #define ECON_STR_NO_RETURN   384
 #define ECON_STR_FOOD        386

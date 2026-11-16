@@ -1,8 +1,9 @@
 /* menu.h - extras of menu.c beyond the [menu.c] block of w2.h (menu_enter/draw/event/tick,
  * endscreen_enter).
  *
- * Screens: (logo movie) -> title (War Data 299) -> main menu -> options / custom game setup ->
- * select scenario; end screen (victory / defeat + stats). Everything is drawn in HIRES coordinates
+ * Screens: (logo movie) -> title (War Data 299) -> main menu -> options / single player ->
+ * custom game setup -> select scenario, or campaign race -> missions -> (act title, movie) ->
+ * briefing -> mission; end screen (victory / defeat + stats) -> next briefing / the same again. Everything is drawn in HIRES coordinates
  * into view.buf / view.pitch (halved in lores, assets_lores()); mouse events arrive in the current
  * mode's pixels and are doubled in lores.
  *
@@ -29,7 +30,14 @@ int menu_game_type(void);
 
 /* The screen now shown (MENU_SCR_*), for tests and the game shell. */
 enum { MENU_SCR_NONE, MENU_SCR_MOVIE, MENU_SCR_TITLE, MENU_SCR_MAIN, MENU_SCR_OPTIONS, MENU_SCR_SETUP,
-       MENU_SCR_MAPS, MENU_SCR_END, MENU_SCR_COUNT };
+       MENU_SCR_MAPS, MENU_SCR_END,
+       MENU_SCR_SINGLE,     /* New Campaign / Custom Scenario / Previous Menu */
+       MENU_SCR_CAMPAIGN,   /* Human Campaign / Orc Campaign */
+       MENU_SCR_LEVELS,     /* the missions reached so far (campaign.cfg), the furthest one selected */
+       MENU_SCR_ACT,        /* act title picture before the first mission of an act */
+       MENU_SCR_BRIEF,      /* mission briefing: picture, title, scrolling text, objectives, voice */
+       MENU_SCR_FINAL,      /* after the last mission: the race's ending text and voice */
+       MENU_SCR_COUNT };
 int menu_screen(void);
 
 /* 0 = skip the logo movie before the title (default 1; the test switches it off/on). */

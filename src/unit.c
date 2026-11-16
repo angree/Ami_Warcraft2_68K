@@ -1,6 +1,8 @@
 /* unit.c - unit life cycle, occupancy, animation engine, order dispatch, queries (see unit.h). */
 #include <string.h>
+#include "amiga_uclock.h"
 #include "w2.h"
+#include "spells.h"
 #include "unit.h"
 #include "move.h"
 
@@ -433,7 +435,11 @@ static void dispatch(int slot)
 	case W2_ORD_RESEARCH:      ord_research(slot); break;
 	case W2_ORD_UPGRADE_TO:    ord_upgrade_to(slot); break;
 	case W2_ORD_REPAIR:        ord_repair(slot); break;
-	default: break;            /* NONE, LOAD/UNLOAD/CAST/DEMOLISH: no handler in the contract yet */
+	case W2_ORD_LOAD:          ord_load(slot); break;
+	case W2_ORD_UNLOAD:        ord_unload(slot); break;
+	case W2_ORD_CAST:          ord_cast(slot); break;
+	case W2_ORD_DEMOLISH:      ord_demolish(slot); break;
+	default: break;
 	}
 }
 
@@ -462,7 +468,6 @@ void unit_tick_all(void)
 		}
 		if (!(u->flags & W2_UF_ALIVE)) continue;
 		/* rates: phases spread over the slots so not every unit ticks in the same cycle */
-		if (t && (t->xflags & W2UX_MANA) && m30 == 0 && u->mana < W2_MANA_MAX) u->mana++;
 		if (m60 == 0 && t && u->hp < t->hp && u->hp > 0 && econ_stat(slot, W2_STAT_REGEN) > 0) u->hp++;
 		if (u->ttl && --u->ttl == 0) { unit_kill(slot); continue; }
 		dispatch(slot);
@@ -538,6 +543,7 @@ int unit_visible_local(int slot)
 	if (!valid(slot)) return 0;
 	u = &w2.unit[slot];
 	if (u->owner == w2.local_player) return 1;
+	if (spells_hidden_from(slot, w2.local_player)) return 0;   /* invisible enemy */
 	footprint(u, &w, &h);
 	bld = (u->flags & W2_UF_BUILDING) != 0;
 	for (y = u->ty; y < u->ty + h; y++)

@@ -217,6 +217,14 @@ void ord_move(int slot);                       /* W2_ORD_MOVE handler */
 void ord_follow(int slot);
 void ord_stand(int slot);
 void ord_still(int slot);                      /* idle; calls combat_acquire for armed units */
+/* [transport.c] transports (docking, load, unload) */
+void ord_load(int slot);                       /* W2_ORD_LOAD: a passenger boards / a transport picks up */
+void ord_unload(int slot);                     /* W2_ORD_UNLOAD: a transport lands its passengers */
+int  transport_smart(int slot, int tx, int ty, int target);   /* right-click handled as board/land? 1 = done */
+/* [spells.c] spells, mana, timed effects, demolish */
+void ord_cast(int slot);                       /* W2_ORD_CAST */
+void ord_demolish(int slot);                   /* W2_ORD_DEMOLISH */
+void spells_tick_all(void);                    /* once per game cycle after the units: mana, timed effects */
 
 /* [combat.c + missile.c] */
 void ord_attack(int slot);

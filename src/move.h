@@ -9,6 +9,10 @@
  * 32 px the unit arrives: tx/ty = destination, ox/oy = 0, source released, and the next step may start
  * in the same cycle (16 cycles per tile for a footman).
  *
+ * Ships: a 2-tile step (PATH_STEP2, see path.c) reserves only the far tile and arrives after 64 px of
+ * the MOVE animation - two loops of our 32-px ship loop (the original's ship loop is one of 64 px in
+ * 32 cycles, re68k anim_move_speed.csv: the same 2 px per cycle).
+ *
  * Integration (works with today's unit.c; the first two would make it tighter):
  *  - unit.c should call move_tick(slot) every cycle for every unit on the map (idempotent). Today the
  *    offset is updated only when a move_* function / ord_still runs for the unit; a step interrupted by
@@ -22,7 +26,20 @@
 
 #include <stdint.h>
 
-enum { MC_LAND, MC_SEA, MC_AIR };
+enum { MC_LAND, MC_SEA, MC_AIR, MC_DOCK };   /* MC_DOCK: a transport docking (Mac movement type 3) */
+
+/* SQM terrain bits of a tile (cached from the tileset group flags; see path.c) */
+#define MT_LAND    1     /* SQM 0x01: blocks ships and docking ships */
+#define MT_SHALLOW 2     /* SQM 0x02: coast boundary; blocks land units and ships, a docking ship enters */
+#define MT_WATER   4     /* SQM 0x40 */
+int  move_terrain(int tx, int ty);          /* MT_* bits, 0 off the map */
+/* docking mode of a transport (only while its order is W2_ORD_LOAD / W2_ORD_UNLOAD): may enter
+ * shallow tiles, single steps unless start and goal are even (transport.c sets/clears it) */
+void move_set_dock(int slot, int on);
+int  move_get_dock(int slot);
+void path_terrain_reset(void);             /* new map (move_reset_all calls it) */
+/* path directions: bit 3 = a 2-tile step (ships on the even grid) */
+#define PATH_STEP2 8
 
 extern const int8_t w2_dir_dx[8];   /* 0=N clockwise */
 extern const int8_t w2_dir_dy[8];

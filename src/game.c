@@ -19,6 +19,7 @@
 #include "combat.h"
 #include "amiga_uclock.h"
 #include "ui.h"
+#include "campaign.h"
 
 W2World w2;
 W2View view;
@@ -46,7 +47,7 @@ static void apply_mode(void)
 }
 int game_mouse_x, game_mouse_y;
 int game_draws_minimap = 1;
-unsigned long game_prof_us[5];   /* draw sections (profile=1): map+fog, units, missiles, minimap, ui */
+unsigned long game_prof_us[10];   /* draw sections (profile=1): map+fog, units, missiles, minimap, ui */
 
 static int g_quit;
 static int g_menu_was_play;      /* the last frame drawn was the game: the menu must repaint all */
@@ -184,6 +185,10 @@ int game_start(const W2Setup *s)
 			if (tx >= 0) unit_create(w2.player[p].race == 1 ? W2U_PEON : W2U_PEASANT, p, tx, ty);
 		}
 
+	/* rescue marks, circles of power, rescue-active players to the AI; a campaign mission also gets
+	 * its diplomacy, allowances and objective rule (campaign.c) */
+	camp_world_setup();
+
 	for (p = 0; p < 8; p++) econ_recount(p);
 	for (p = 0; p < 8; p++) {
 		int c = w2.player[p].control;
@@ -258,6 +263,14 @@ int game_init(void)
 	if (assets_lores() && lores_prepare()) w2_log("game: lores_prepare failed - point-sampled art");
 	view.lores = assets_lores();
 	view.scr_x = GAME_VIEW_X; view.scr_y = GAME_VIEW_Y; view.scr_w = GAME_VIEW_W; view.scr_h = GAME_VIEW_H;
+	a = w2cfg_extra("autostart_campaign");      /* test: "h3" / "o14" = straight into that mission */
+	if (a && (a[0] == 'h' || a[0] == 'o') && atoi(a + 1) >= 1) {
+		camp_select(a[0] == 'o', atoi(a + 1));
+		w2_log("game: autostart campaign %s", a);
+		if (camp_start_game() == 0) return 0;
+		camp_stop();
+		w2_log("game: campaign autostart failed - menu");
+	}
 	a = w2cfg_extra("autostart");
 	if (a && *a) {
 		W2Setup s;
@@ -301,15 +314,28 @@ void game_tick(void)
 {
 	if (game_state != GS_PLAY) { menu_tick(); return; }
 	if (ui_menu_active()) { ui_tick(); return; }   /* in-game menu open: the world stands still */
+	unsigned long t0, t1, t2, t3, t4, t5;
 	scroll_tick();
+	t0 = amiga_uclock_us();
 	unit_tick_all();
+	t1 = amiga_uclock_us();
 	missile_tick_all();
+	spells_tick_all();
+	t2 = amiga_uclock_us();
 	ai_tick();
+	t3 = amiga_uclock_us();
 	if (w2_faithful || (w2.cycle & 3) == 0) fog_update();
+	t4 = amiga_uclock_us();
 	ui_tick();
 	w2.cycle++;
 	if (!w2.game_over) {
-		check_end();
+		int r = camp_tick();             /* rescue + circles always; the objective rule in a campaign */
+		t5 = amiga_uclock_us();
+		game_prof_us[5] += t1 - t0; game_prof_us[6] += t2 - t1; game_prof_us[7] += t3 - t2;
+		game_prof_us[8] += t4 - t3; game_prof_us[9] += t5 - t4;
+		if (camp_active()) {
+			if (r) { w2.game_over = (uint8_t)r; g_end_wait = 90; }
+		} else check_end();
 	} else if (g_end_wait > 0 && --g_end_wait == 0) {
 		game_end(w2.game_over);
 	}

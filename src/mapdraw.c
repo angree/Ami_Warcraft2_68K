@@ -18,6 +18,7 @@
 #include "assets.h"
 #include "w2cfg.h"
 #include "mapdraw.h"
+#include "spells.h"
 
 int mapdraw_fog_mode = MAPDRAW_FOG_DITHER;
 int mapdraw_reveal = 0;
@@ -201,6 +202,7 @@ void fog_update(void)
 			for (; xa <= xb; xa++) row[xa] |= (uint8_t)bit;
 		}
 	}
+	spells_fog_stamp();                     /* holy vision / eye areas */
 	for (i = 0; i < n; i++) exp[i] |= vis[i];
 	g_fog_serial++;
 }

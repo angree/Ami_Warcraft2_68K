@@ -388,3 +388,51 @@ Detailed write-ups: `docs/SPEC_AI.md` (computer player), `docs/SPEC_MECHANICS.md
   workers. Field ids = byte offsets in the 0x34-byte AI record (9..34, see SPEC_AI). Attack triggers
   handled every 50 cycles (`AI_Tick50a` 0x140A5E); target = the human player with most units; with
   no human player the original never attacks (ours keeps its own target choice).
+
+## 13. Campaigns, spells, transports (2026-11-16, checked against the Mac binary)
+
+**Campaigns.** Level index = A5+6A86 − 1192 (f9_149C); map = War Data 192 + index, index =
+2·(mission−1) + race; FUN_00143204 advances +2 after a victory and repeats after a defeat; the last
+level is 1218 + race. Per-level tables, loaded by FUN_0013800e / f8_45F0 in single-player only (other
+games: objective 0x100): A5+18BC objective code (→ A5+6D5E), A5+1884 required count (→ A5+6D60),
+A5+1814 / 1734 / 17A4 unit / spell / upgrade masks (the same for all 16 players). ALOW (f8_3B04, exactly
+0x180 bytes): 6A8A units, 6ACA starting spells (default 0x4020), 6B0A allowed spells, 6B4A, 6B8A
+upgrades, 6BCA. The objective is checked every 200 cycles (Game_Every200 → function chosen by
+f14_32E6; common part FUN_00172e88): defeat = no units, nothing in production, no finished building of
+the A5+63EE list, or gold < 400; "destroy all" = every other player 0..7 has no building and only
+transports / tankers / flying machines, checked only while the local player trains and builds nothing.
+Objective codes 0..10: f14_2FBC, 32B8, 2FF2, 3066 (+0017302a), 30BE, 30DA, 3104, 3150, 3190, 31AA,
+321A; counters 642E dark portal, 644E runestone, 63EE production/armed buildings. Rescue: units of PUD
+owners 6/7 get +0x1C bit 0x100 at load (f8_3EDE); FUN_0016ccc8 hands a marked unit touched by a human
+player's unit over (FUN_0016cc14, +6D84 rescue counter), a rescued hall hands over the whole player.
+Circle of power f6_2624 every 50 cycles: marked human units inside add to 6D64 (+0x1000 for a hero).
+Briefing: title War Strings 54[35+i], objectives 54[i], text War Strings 65+i; picture table A5−0x7BA0,
+palettes 367/368; voice lists A5−0x7ADC (War Music entry = id − 18384); act screen War Resources
+19+2·(act−1)+race on palette 17, captions War Strings 62; act movies A5−0x758A. No difficulty levels,
+no carry-over (0x00168058 is the AI research sync). Tides only on this CD (no expansion).
+
+**Spells.** Orders 38..56; mana cost A5−739C, range A5+1C60 (Chebyshev, 0xFF unlimited), position flag
+A5+1AEE, effect hook A5+1D94. The caster walks into range, plays its attack animation, the effect runs
+on the hit step and mana is paid then. Mana (UnitTimersTick 0x16BBFA): casters = UDTA flag 0x20000
+(incl. paladin, ogre-mage), +1 every 40 cycles up to 255, start 85 (0x16D3A8). Costs/ranges: holy vision
+70/∞, healing 6 per HP/6 (≤ 40 HP), exorcism 4 per HP/10, flame shield 80/6 (timer 500), fireball 100/10,
+slow 50/10, haste 50/6 (one signed timer ±1000), invisibility 200/6 (2000 cycles), polymorph 200/10,
+blizzard 25/12, death and decay 25/12, eye of kilrogg 70/self, bloodlust 50/6 (1000), raise dead 50
+each/6, death coil 100/10 (5×5, 50 HP budget), whirlwind 100/12 (800 steps of 3 cycles), unholy armor
+100/6 (500 cycles, HP halved), runes 200/10 (5 runes, 2048 cycles, 50 damage). Haste halves / slow
+doubles animation waits. Demolish (orders 20/21, f4_1468): 200 + 200 to ground units on the 8
+neighbours, trees within radius 2 cleared, the sapper dies. Status icons War Data 323 (0x170E46).
+Computer casters f7_5722 → 0x13D4E8 paladin, 0x13D540 ogre-mage, 0x13D598 mage, 0x13D654 death knight;
+research bits A5+6ACA as listed in spells.c.
+
+**Transports.** Orders 29 unload (f6_2A4C), 30 dock (Move_ActionB 0x151038), 31 undock (0x1511C4), 32
+docked-waiting, 34 board (0x1329BE → 0x13284C), 36 inside. unit+0x2A movement type (0 land, 1 air,
+2 ship, 3 docking ship); unit+0x1C bit 2 = 2-tile steps, bit 0x40 = unload on arrival; A5+171C =
+{0, 6, 0xA, 0xA}: bit 2 needs even coordinates, bit 8 needs water. unit+0x70: 6 passenger slots on a
+transport / the transport on a passenger; +0x75 bit 0x10 = inside a transport. Boarding reach 2 tiles
+per axis, transport in order 32. Dock point: ring search (0x13098C, limit 8) for a shallow tile of the
+clicked tile's REGM region (A5+6A4E, loaded by f8_41CA). Unloading only on a shallow tile, passengers
+5..0 to the first free land tile of a ring search. Unload button f9_5594: docked and waiting → unload at
+once. Computer: role 3 (f8_2010 0x142010) collects up to 6 "needs transport" units for one region,
+sails to a random coast tile of it (AI_RandomDirSearch 0x141D06); only profiles asking for transports
+(field 26) use them.

@@ -16,6 +16,20 @@
  * stay ours. No data / bad profile / w2.cfg ai_programs=0: the fixed plan above.
  * Enemy units are seen only when visible to the player (or attacking one of its units).
  *
+ * Transports (Mac 1.23 role 3, f8_2010 0x00142010, every 50 cycles there, in our think here): a land
+ * attacker whose target is on another land region "needs transport" (Mac unit+0x5F bit 0, destination
+ * region +0x5C, set by the role assigner 0x00141224) and waits. A transport that is idle or docked:
+ *  - if units assigned to it are still walking to it: it waits (Mac 0x00141F5A; ours gives up after
+ *    AI_TR_PATIENCE thinks and sails with what is aboard);
+ *  - empty: up to 6 waiting units with no valid transport and one destination region are assigned and
+ *    ordered to board (the first one's order makes the transport come and dock near it); nobody to
+ *    carry -> it docks near the home hall (Mac f10_2E0A nearest town hall);
+ *  - loaded: landing point = the passengers' target, with the program field +0x0C set a coast tile of
+ *    the target's region found by straight lines in a random direction (AI_RandomDirSearch
+ *    0x00141D06); escorts follow (Mac role 7; the original reads the escort count from +0x0F of the
+ *    context of player 0,1,2.. - ours uses its own +0x0F); then it docks there and unloads (+0x1C
+ *    bit 0x40). Landed units are attackers in their target's region again and attack-move on.
+ *
  * Only the cmd_* command API and read-only world state are used. Each computer player thinks once
  * every AI_THINK_PERIOD cycles (players staggered); one think scans the unit array exactly once.
  * No allocation, no floats, randomness only through w2_rand().
@@ -30,6 +44,8 @@
 #include "aiprog.h"
 #include "unit.h"
 #include "pud.h"
+#include "transport.h"
+#include "move.h"
 
 /* m68k-amigaos-gcc 6.5 -O1 crashes (ivopts ICE) when these per-unit helpers are inlined into scan() */
 #define W2_AI_NOINLINE __attribute__((noinline))
@@ -47,6 +63,11 @@
 #define AI_ENEMY_R   24      /* enemies further than this from home are not tracked */
 #define AI_ARMY_CAP  40
 #define AI_PEND_TTL  3000    /* cycles a build order may take until the building appears */
+#define AI_MAX_TRANS 8
+#define AI_MAX_OIL   24
+#define AI_SHORE_R   24      /* shore building site search radius around home (tiles) */
+#define AI_TR_PATIENCE 8     /* thinks a transport waits for units walking to it (ours) */
+#define AI_NTR_WAIT  50      /* thinks a unit waits for a transport that cannot come (no transport possible) */
 
 enum { J_IDLE, J_GOLD, J_WOOD, J_BUSY };
 enum { ROLE_HOME, ROLE_ATTACK };
@@ -118,6 +139,7 @@ typedef struct AiState {
 	uint8_t wave, wave_extra;
 	uint8_t visited;            /* bit q: enemy q's start location was visited and found empty */
 	uint8_t site_fail;
+	uint32_t shore_cool;        /* no shore site found: do not search again before this cycle */
 	uint8_t prog;               /* 1 = driven by its profile program (aiprog.c) */
 	uint32_t prog_cycle;        /* game cycle the program was last advanced to */
 	int16_t home_tx, home_ty;
@@ -133,6 +155,11 @@ static uint8_t  ai_own[W2_MAX_UNITS];   /* its owner + 1 (0 = nothing recorded) 
 static uint16_t ai_hp[W2_MAX_UNITS];    /* hp at the owner's last think */
 static uint8_t  ai_role[W2_MAX_UNITS];
 static uint8_t  ai_retry[W2_MAX_UNITS];
+static uint8_t  ai_ntr[W2_MAX_UNITS];    /* needs transport: destination land region, 0 = no (Mac +0x5F bit 0, +0x5C) */
+static int16_t  ai_ntx[W2_MAX_UNITS], ai_nty[W2_MAX_UNITS];   /* its target point */
+static uint16_t ai_tslot[W2_MAX_UNITS], ai_tgen[W2_MAX_UNITS];  /* transport assigned to it (Mac +0x64) */
+static uint8_t  ai_twait[W2_MAX_UNITS];  /* transport: thinks waiting for walkers (Mac +0x60); unit: thinks waiting */
+static uint8_t  ai_tfail[W2_MAX_UNITS];  /* transport: unloads that left passengers aboard (no room on the coast) */
 static int      g_log;
 static int      g_prog_on = 1;          /* w2.cfg ai_programs=0: always the fixed plan */
 static uint8_t  ai_isprod[W2_NUM_UNIT_TYPES];   /* building trains one of the program's unit classes */
@@ -151,6 +178,10 @@ static uint16_t s_hurt[AI_MAX_HURT];  static int s_nhurt;
 static uint16_t s_prod[AI_MAX_PROD];  static int s_nprod;    /* idle barracks */
 static uint16_t s_prodx[AI_MAX_PROD]; static int s_nprodx;   /* idle producers of any program class */
 static uint16_t s_navy[AI_MAX_PROD * 2]; static int s_nnavy; /* own attack-capable ships */
+static uint16_t s_trans[AI_MAX_TRANS]; static int s_ntrans;  /* own transports on the map */
+static uint16_t s_tank[AI_MAX_TRANS * 2]; static int s_ntank;  /* own tankers on the map */
+static uint16_t s_plat[AI_MAX_OIL]; static int s_nplat;        /* own complete oil platforms with oil */
+static uint16_t s_oil[AI_MAX_OIL];  static int s_noil;         /* oil patches */
 static uint16_t s_land, s_sea, s_air;  /* complete attack units per domain (the program's conditions) */
 static uint16_t s_ewk;                 /* bit q: enemy q has a worker */
 static uint16_t s_alive[W2_MAX_PLAYERS];
@@ -257,6 +288,7 @@ static void scan_own_building(int i, const W2Unit *u, const w2_unit_type *t, con
 	int tier = hall_tier_of(u->type);
 	if (u->flags & W2_UF_UNDERCONST) { s_cons[u->type]++; return; }
 	s_done[u->type]++;
+	if ((t->flags & W2UF_OIL_PLATFORM) && u->res_left > 0 && s_nplat < AI_MAX_OIL) s_plat[s_nplat++] = (uint16_t)i;
 	if (t->food > 0) s_food_sup += t->food;
 	if (tier) {
 		if (tier > s_hall_tier) s_hall_tier = tier;
@@ -300,6 +332,7 @@ static W2_AI_NOINLINE void scan_own(int p, int i, const W2Unit *u, const w2_unit
 	if (ai_own[i] != p + 1 || !unit_same(i, ai_gen[i])) {
 		ai_own[i] = (uint8_t)(p + 1); ai_gen[i] = unit_gen(i);
 		ai_hp[i] = u->hp; ai_role[i] = ROLE_HOME; ai_retry[i] = 0;
+		ai_ntr[i] = 0; ai_tslot[i] = W2_NO_UNIT; ai_twait[i] = 0; ai_tfail[i] = 0;
 	}
 	if (u->hp < ai_hp[i] && s_nhurt < AI_MAX_HURT) s_hurt[s_nhurt++] = (uint16_t)i;
 	ai_hp[i] = u->hp;
@@ -319,6 +352,10 @@ static W2_AI_NOINLINE void scan_own(int p, int i, const W2Unit *u, const w2_unit
 		if (s_narmy < AI_MAX_ARMY) s_army[s_narmy++] = (uint16_t)i;
 	} else if ((t->flags & W2UF_CAN_ATTACK) && t->kind == W2_KIND_SEA && !(u->flags & W2_UF_INSIDE)) {
 		if (s_nnavy < AI_MAX_PROD * 2) s_navy[s_nnavy++] = (uint16_t)i;
+	} else if ((t->flags & W2UF_TRANSPORT) && t->kind == W2_KIND_SEA && !(u->flags & (W2_UF_INSIDE | W2_UF_HIDDEN))) {
+		if (s_ntrans < AI_MAX_TRANS) s_trans[s_ntrans++] = (uint16_t)i;
+	} else if ((t->flags & W2UF_TANKER) && !(u->flags & (W2_UF_INSIDE | W2_UF_HIDDEN))) {
+		if (s_ntank < AI_MAX_TRANS * 2) s_tank[s_ntank++] = (uint16_t)i;
 	}
 	/* the original's domain counters (Mac f6_1358): attack-capable, by movement class */
 	if ((t->flags & W2UF_CAN_ATTACK) && (t->flags & 0x1Fu)) {
@@ -368,9 +405,17 @@ static void scan_home(AiState *st)
 		st->home_tx = (int16_t)hx; st->home_ty = (int16_t)hy;
 	}
 	best = 0x7FFF;
-	for (i = 0; i < s_nmine; i++) {
-		int d = udist_tile(s_mine[i], st->home_tx, st->home_ty);
-		if (d < best) { best = d; s_main_mine = s_mine[i]; }
+	{   /* a mine on another island cannot be walked to (Mac 5.7: the site must be in the worker's region) */
+		int hr = transport_region(st->home_tx, st->home_ty);
+		for (i = 0; i < s_nmine; i++) {
+			const W2Unit *m = &w2.unit[s_mine[i]];
+			int d = udist_tile(s_mine[i], st->home_tx, st->home_ty), r = 0, x, y;
+			for (y = m->ty - 1; y <= m->ty + 3 && !r; y++)
+				for (x = m->tx - 1; x <= m->tx + 3 && !r; x++)
+					if (transport_region(x, y) == hr) r = 1;
+			if (hr && !r) continue;
+			if (d < best) { best = d; s_main_mine = s_mine[i]; }
+		}
 	}
 }
 
@@ -387,7 +432,7 @@ static void scan(int p)
 	for (i = 0; i < (int)W2_NUM_UNIT_TYPES; i++) s_idle[i] = -1;
 	s_research[0] = s_research[1] = 0;
 	s_nwork = s_narmy = s_nenemy = s_nmine = s_nhurt = s_nprod = s_nhalls = 0;
-	s_nprodx = s_nnavy = 0; s_land = s_sea = s_air = 0; s_ewk = 0;
+	s_nprodx = s_nnavy = s_ntrans = s_ntank = s_nplat = s_noil = 0; s_land = s_sea = s_air = 0; s_ewk = 0;
 	s_hall = -1; s_hall_tier = 0; s_upgrading = 0; s_main_mine = -1;
 	s_food_sup = s_food_used = 0; s_ebld = -1; s_ebld_d = 0x7FFF; s_ngold = s_nwood = 0;
 
@@ -400,6 +445,8 @@ static void scan(int p)
 		if (u->owner < W2_MAX_PLAYERS && u->owner != W2_NEUTRAL) s_alive[u->owner]++;
 		if (u->type == W2U_GOLD_MINE) {
 			if (u->res_left > 0 && s_nmine < AI_MAX_MINE) s_mine[s_nmine++] = (uint16_t)i;
+		} else if (u->type == W2U_OIL_PATCH) {
+			if (s_noil < AI_MAX_OIL) s_oil[s_noil++] = (uint16_t)i;
 		} else if (u->owner == p) {
 			scan_own(p, i, u, t, r);
 		} else if (u->owner < W2_MAX_PLAYERS && ((emask >> u->owner) & 1u)) {
@@ -516,12 +563,13 @@ static int pick_builder(int x, int y)
 	return best;
 }
 
+static int issue_build(int p, int type, int wi, int tx, int ty);
+
 /* order a building at a site near (cx,cy). 1 = issued, 0 = not possible now */
 static int try_build(int p, int type, int cx, int cy, int urgent)
 {
-	AiState *st = &ai_st[p];
 	const w2_unit_type *t = w2_unit((unsigned)type);
-	int wi, b, tx, ty, i;
+	int wi, b, tx, ty;
 	if (!t || !req_ok(p, type)) return 0;
 	if (!can_spend(t->gold, t->wood, t->oil, urgent)) { reserve(t->gold, t->wood, t->oil); return 0; }
 	if (pend_count(-1) >= 2) return 0;
@@ -529,6 +577,15 @@ static int try_build(int p, int type, int cx, int cy, int urgent)
 	if (wi < 0) return 0;
 	b = s_work[wi];
 	if (!ai_find_site(p, type, cx, cy, b, &tx, &ty)) { ai_log(p, "no site for %s near %d,%d", tname(type), cx, cy); return 0; }
+	return issue_build(p, type, wi, tx, ty);
+}
+
+/* worker s_work[wi] builds 'type' at (tx,ty). 1 = issued */
+static int issue_build(int p, int type, int wi, int tx, int ty)
+{
+	AiState *st = &ai_st[p];
+	const w2_unit_type *t = w2_unit((unsigned)type);
+	int b = s_work[wi], i;
 	cmd_build(b, type, tx, ty);
 	if (w2.unit[b].order != W2_ORD_BUILD) {
 		st->site_fail++;
@@ -547,6 +604,92 @@ static int try_build(int p, int type, int cx, int cy, int urgent)
 	spend(t->gold, t->wood, t->oil);
 	ai_log(p, "build %s at %d,%d by #%d", tname(type), tx, ty, b);
 	return 1;
+}
+
+/* shore building (shipyard, foundry, refinery: water / coast boundary tiles, at least one of them a
+ * coast of our land) near home: rings around home, our own fast terrain test, then the economy's */
+static int shore_site(int p, int type, int builder, int *otx, int *oty)
+{
+	AiState *st = &ai_st[p];
+	const w2_unit_type *t = w2_unit((unsigned)type);
+	int w = t->tile_w, h = t->tile_h, cx = st->home_tx, cy = st->home_ty, hr = transport_region(cx, cy), r, k;
+	for (r = 0; r <= AI_SHORE_R; r++) {
+		int n = r ? 8 * r : 1;
+		for (k = 0; k < n; k++) {
+			int dx, dy, tx, ty, x, y, ok = 1, coast = 0;
+			if (!r) { dx = 0; dy = 0; }
+			else if (k < 2 * r) { dx = -r + k; dy = -r; }
+			else if (k < 4 * r) { dx = r; dy = -r + (k - 2 * r); }
+			else if (k < 6 * r) { dx = r - (k - 4 * r); dy = r; }
+			else { dx = -r; dy = r - (k - 6 * r); }
+			tx = cx + dx - w / 2; ty = cy + dy - h / 2;
+			if (tx < 1 || ty < 1 || tx + w > w2.map.w - 1 || ty + h > w2.map.h - 1) continue;
+			for (y = ty; y < ty + h && ok; y++)
+				for (x = tx; x < tx + w && ok; x++) {
+					int mt = move_terrain(x, y), i = y * w2.map.w + x;
+					if ((mt & MT_LAND) || !(mt & (MT_WATER | MT_SHALLOW)) || (w2.map.flags[i] & W2_TF_BUILDING) ||
+					    w2.map.occ_ground[i] != W2_NO_UNIT) ok = 0;
+					else if ((mt & MT_SHALLOW) && transport_coast_of(x, y, hr)) coast = 1;
+				}
+			if (!ok || !coast) continue;
+			if (econ_place_ok(p, type, tx, ty, builder)) { *otx = tx; *oty = ty; return 1; }
+		}
+	}
+	return 0;
+}
+
+static int try_shore(int p, int type)
+{
+	AiState *st = &ai_st[p];
+	const w2_unit_type *t = w2_unit((unsigned)type);
+	int wi, tx, ty;
+	if (!t || !req_ok(p, type)) return 0;
+	if (!can_spend(t->gold, t->wood, t->oil, 1)) { reserve(t->gold, t->wood, t->oil); return 0; }
+	if (pend_count(-1) >= 2 || w2.cycle < st->shore_cool) return 0;
+	wi = pick_builder(st->home_tx, st->home_ty);
+	if (wi < 0) return 0;
+	if (!shore_site(p, type, s_work[wi], &tx, &ty)) {
+		st->shore_cool = w2.cycle + 800;
+		ai_log(p, "no shore site for %s", tname(type));
+		return 0;
+	}
+	return issue_build(p, type, wi, tx, ty);
+}
+
+/* tankers (Mac 0x00152952): loaded -> back to a depot; empty -> the own platform with oil nearest to
+ * home; none -> build a platform on the oil patch nearest to home */
+static void tankers(int p)
+{
+	AiState *st = &ai_st[p];
+	int k, building = 0, i;
+	for (k = 0; k < s_ntank; k++) if (w2.unit[s_tank[k]].order == W2_ORD_BUILD) building = 1;
+	for (k = 0; k < s_ntank; k++) {
+		int s = s_tank[k], best = -1, bd = 0x7FFF;
+		const W2Unit *u = &w2.unit[s];
+		if (!is_idle(u)) continue;
+		if (u->res_amount) { cmd_return(s); continue; }
+		for (i = 0; i < s_nplat; i++) {
+			int d = udist_tile(s_plat[i], st->home_tx, st->home_ty) + unit_dist_tiles(s_plat[i], s) / 2;
+			if (d < bd) { bd = d; best = s_plat[i]; }
+		}
+		if (best >= 0) { cmd_harvest(s, best, w2.unit[best].tx, w2.unit[best].ty); continue; }
+		if (building) continue;
+		{
+			int pt = st->race ? W2U_ORC_OIL_PLATFORM : W2U_HUMAN_OIL_PLATFORM;
+			const w2_unit_type *t = w2_unit(pt);
+			for (i = 0; i < s_noil; i++) {
+				int d = udist_tile(s_oil[i], st->home_tx, st->home_ty);
+				if (d < bd) { bd = d; best = s_oil[i]; }
+			}
+			if (best < 0 || !t || !can_spend(t->gold, t->wood, t->oil, 0)) continue;
+			cmd_build(s, pt, w2.unit[best].tx, w2.unit[best].ty);
+			if (w2.unit[s].order == W2_ORD_BUILD) {
+				spend(t->gold, t->wood, t->oil);
+				building = 1;
+				ai_log(p, "tanker #%d builds an oil platform at %d,%d", s, w2.unit[best].tx, w2.unit[best].ty);
+			}
+		}
+	}
 }
 
 static void check_pending(int p)
@@ -741,8 +884,9 @@ static int run_build_order(int p, int *blocked)
 /* the program's build list (aiprog_build_list): entries are walked from the top like the original
  * (Mac FUN_00152546): a building entry is met while the player owns as many of that building as the
  * list has asked for so far (lost ones are rebuilt); the first unmet one that can be built now is
- * ordered and blocks the rest; a research entry blocks until it is done. Not buildable by this AI
- * (coast/oil buildings, a second town hall: the expansion rule does that) or not allowed: skipped. */
+ * ordered and blocks the rest; a research entry blocks until it is done. Shore buildings go to a
+ * coast near home (skipped while there is none); oil platforms are left to the tankers; a second town
+ * hall (the expansion rule does that) or anything not allowed: skipped. */
 static void run_prog_build(int p, int *blocked)
 {
 	static uint8_t need[W2_NUM_UNIT_TYPES];
@@ -764,8 +908,14 @@ static void run_prog_build(int p, int *blocked)
 				have = s_nhalls + s_cons[r->hall[1]] + pend_count(r->hall[1]);
 			} else have = total_of(type);
 			if (have >= need[type]) continue;
-			if (t->flags & (W2UF_SHORE_BUILDING | W2UF_OIL_PLATFORM)) continue;
+			if (t->flags & W2UF_OIL_PLATFORM) continue;           /* the tankers build those */
 			if (!req_ok(p, type)) continue;
+			if (t->flags & W2UF_SHORE_BUILDING) {                /* no coast near home: skip it */
+				if (w2.cycle < st->shore_cool) continue;
+				*blocked = k;
+				try_shore(p, type);
+				return;
+			}
 			*blocked = k;
 			try_build(p, type, st->home_tx, st->home_ty, 1);
 			return;
@@ -978,6 +1128,128 @@ static int find_threat(int p)
 /* the program's one-shot attack triggers (Mac AI_Tick50a, every 50 cycles there): each sends 'count'
  * groups of 'size' units of its domain that are not attacking yet, then the trigger is cleared. Kept
  * while home is under threat (our addition: defence first). Returns the land/air units sent. */
+/* ---- transports ------------------------------------------------------------------------------ */
+static int land_kind(int s) { const w2_unit_type *t = w2_unit(w2.unit[s].type); return t && t->kind == W2_KIND_LAND; }
+
+/* attack-move an attacker to (tx,ty), or mark it "needs transport" when the point is on another land
+ * region (Mac role assigner 0x00141224); carried units are left alone until they land */
+static void send_attacker(int s, int tx, int ty)
+{
+	const W2Unit *u = &w2.unit[s];
+	int rt, ru;
+	if (u->flags & W2_UF_INSIDE) return;
+	if (land_kind(s)) {
+		rt = transport_region(tx, ty); ru = transport_region(u->tx, u->ty);
+		if (rt && ru && rt != ru) {
+			if (ai_ntr[s] != rt) { ai_ntr[s] = (uint8_t)rt; ai_twait[s] = 0; ai_tslot[s] = W2_NO_UNIT; }
+			ai_ntx[s] = (int16_t)tx; ai_nty[s] = (int16_t)ty;
+			return;
+		}
+	}
+	ai_ntr[s] = 0;
+	cmd_attack_move(s, tx, ty);
+}
+
+/* this player can get a transport (has one, trains one, or its program asks for one) */
+static int can_ship(int p)
+{
+	const AiRace *r = &ai_races[ai_st[p].race];
+	int tt = r->race_shipyard == W2U_HUMAN_SHIPYARD ? W2U_HUMAN_TRANSPORT : W2U_ORC_TRANSPORT;
+	if (s_ntrans || s_train[tt]) return 1;
+	return ai_st[p].prog && aiprog_active(p) && aiprog_get(p, AIP_TRANSPORTS) > 0;
+}
+
+static int tr_assigned(int s)
+{
+	int t = ai_tslot[s];
+	return t != W2_NO_UNIT && unit_same(t, ai_tgen[s]) && w2.unit[t].owner == w2.unit[s].owner;
+}
+
+static void transports(int p)
+{
+	AiState *st = &ai_st[p];
+	int k;
+	for (k = 0; k < s_ntrans; k++) {
+		int t = s_trans[k], n, i, walk = -1, wd = 0x7FFF;
+		const W2Unit *ut = &w2.unit[t];
+		if (!(is_idle(ut) || transport_waiting(t))) continue;     /* Mac: only in order 2 or 32 */
+		n = transport_count(t);
+		/* units assigned to it that are not aboard yet (Mac 0x00141F5A) */
+		for (i = 0; i < s_narmy; i++) {
+			int s = s_army[i], d;
+			if (ai_tslot[s] != t || !tr_assigned(s) || (w2.unit[s].flags & W2_UF_INSIDE) || !ai_ntr[s] ||
+			    transport_region(w2.unit[s].tx, w2.unit[s].ty) == ai_ntr[s]) continue;
+			d = unit_dist_tiles(s, t);
+			if (d < wd) { wd = d; walk = s; }
+		}
+		if (walk >= 0) {
+			if (ai_twait[t] < AI_TR_PATIENCE) {
+				ai_twait[t]++;
+				if (w2.unit[walk].order != W2_ORD_LOAD) transport_cmd_board(walk, t);
+				continue;
+			}
+			for (i = 0; i < s_narmy; i++)          /* gave up on the stragglers */
+				if (ai_tslot[s_army[i]] == t && !(w2.unit[s_army[i]].flags & W2_UF_INSIDE)) ai_tslot[s_army[i]] = W2_NO_UNIT;
+			if (!n) continue;
+		}
+		ai_twait[t] = 0;
+		if (!n) {
+			int dest = 0, got = 0;
+			for (i = 0; i < s_narmy && got < TR_CAP; i++) {
+				int s = s_army[i];
+				const W2Unit *u = &w2.unit[s];
+				if (!ai_ntr[s] || (u->flags & W2_UF_INSIDE) || u->order == W2_ORD_LOAD || tr_assigned(s)) continue;
+				if (!dest) dest = ai_ntr[s];
+				else if (ai_ntr[s] != dest) continue;
+				ai_tslot[s] = (uint16_t)t; ai_tgen[s] = unit_gen(t);
+				transport_cmd_board(s, t);        /* the first one brings the transport to its coast */
+				got++;
+			}
+			if (got) {
+				ai_log(p, "transport #%d at %d,%d: %d units to board (region %d), it %s", t, ut->tx, ut->ty, got, dest,
+				       ut->order == W2_ORD_LOAD ? "docks" : "cannot dock");
+				continue;
+			}
+			if (s_hall >= 0) {                      /* nothing to carry: wait at the home coast */
+				int hx = w2.unit[s_hall].tx, hy = w2.unit[s_hall].ty, hr = transport_region(hx, hy);
+				if (!(transport_docked(t) && transport_coast_of(ut->tx, ut->ty, hr)) && is_idle(ut))
+					transport_cmd_dock(t, hx, hy, 0);
+			}
+			continue;
+		}
+		{
+			uint16_t list[TR_CAP];
+			int m = transport_list(t, list), tx = -1, ty = -1, lx, ly, esc, e, mode = 1;
+			for (i = 0; i < m && tx < 0; i++) if (ai_ntr[list[i]]) { tx = ai_ntx[list[i]]; ty = ai_nty[list[i]]; }
+			if (tx < 0) { if (st->att_tx < 0) continue; tx = st->att_tx; ty = st->att_ty; }
+			lx = tx; ly = ty;
+			if (transport_docked(t) && transport_coast_of(ut->tx, ut->ty, transport_region(tx, ty))) {
+				/* unloaded here already and some are still aboard: no room - once more here (the first
+				 * ones have walked off by now), then another coast of that region (ours) */
+				if (++ai_tfail[t] >= 2) {
+					for (e = 0; e < 4; e++)
+						if (transport_find_landing(t, tx, ty, &lx, &ly) && cheb(lx, ly, ut->tx, ut->ty) > 4) { mode = 2; break; }
+					ai_tfail[t] = 0;
+				}
+			} else {
+				ai_tfail[t] = 0;
+				/* program field +0x0C (1 unless the program clears it): a random coast of the target region */
+				if (!st->prog || !aiprog_active(p) || aiprog_get(p, AIP_STRATEGY)) transport_find_landing(t, tx, ty, &lx, &ly);
+			}
+			if (!transport_cmd_dock(t, lx, ly, mode) && !transport_cmd_dock(t, tx, ty, 1)) {
+				ai_log(p, "transport #%d: no landing near %d,%d", t, tx, ty);
+				continue;
+			}
+			if (ai_tfail[t]) continue;           /* unloading again where it is */
+			esc = (st->prog && aiprog_active(p)) ? aiprog_get(p, AIP_SEA_SIZE) : 0;
+			for (e = 0; e < s_nnavy && esc > 0; e++)
+				if (is_idle(&w2.unit[s_navy[e]])) { cmd_follow(s_navy[e], t); esc--; }
+			ai_log(p, "transport #%d at %d,%d%s: %d aboard (%s), sails to land at %d,%d (target %d,%d)", t, ut->tx, ut->ty,
+			       transport_docked(t) ? " docked" : "", m, tname(w2.unit[list[0]].type), w2.unit[t].goal_tx, w2.unit[t].goal_ty, tx, ty);
+		}
+	}
+}
+
 static int prog_waves(int p, int threat, int have_t, int tx, int ty)
 {
 	static const uint8_t trig[3] = { AIP_ATT_LAND, AIP_ATT_SEA, AIP_ATT_AIR };
@@ -1002,7 +1274,7 @@ static int prog_waves(int p, int threat, int have_t, int tx, int ty)
 				if (ai_role[s] != ROLE_HOME || !t || t->kind != (d == 0 ? W2_KIND_LAND : W2_KIND_AIR)) continue;
 				if (u->order == W2_ORD_ATTACK && u->target != W2_NO_UNIT) continue;   /* fighting at home */
 				ai_role[s] = ROLE_ATTACK; ai_retry[s] = 0;
-				cmd_attack_move(s, tx, ty);
+				send_attacker(s, tx, ty);
 				n++;
 			}
 			sent += n;
@@ -1016,7 +1288,7 @@ static int prog_waves(int p, int threat, int have_t, int tx, int ty)
 static void military(int p)
 {
 	AiState *st = &ai_st[p];
-	int i, threat, home_idle = 0, attackers = 0, tx = -1, ty = -1, have_t, rx, ry, need;
+	int i, threat, home_idle = 0, attackers = 0, tx = -1, ty = -1, have_t, rx, ry, need, landed = 0;
 
 	threat = find_threat(p);
 	st->info.threat = threat;
@@ -1042,6 +1314,13 @@ static void military(int p)
 	if (ry < 1) ry = 1;
 	if (rx > w2.map.w - 2) rx = w2.map.w - 2;
 	if (ry > w2.map.h - 2) ry = w2.map.h - 2;
+	{   /* on an island the point toward the enemy may be in the sea: back toward home until on our land */
+		int hr = transport_region(st->home_tx, st->home_ty), k;
+		for (k = 0; k < 6 && hr && transport_region(rx, ry) != hr; k++) {
+			rx += (st->home_tx > rx) - (st->home_tx < rx);
+			ry += (st->home_ty > ry) - (st->home_ty < ry);
+		}
+	}
 
 	/* attackers: new target, or reached it, or stuck */
 	if (have_t && (tx != st->att_tx || ty != st->att_ty) && st->att_tx >= 0) {
@@ -1053,6 +1332,12 @@ static void military(int p)
 		if (ai_role[s] != ROLE_ATTACK) continue;
 		attackers++;
 		if (!is_idle(u)) continue;
+		if (ai_ntr[s] && transport_region(u->tx, u->ty) == ai_ntr[s]) { landed++; ai_tslot[s] = W2_NO_UNIT; }
+		if (ai_ntr[s] && land_kind(s) && transport_region(u->tx, u->ty) != ai_ntr[s]) {   /* waits for a transport */
+			if (can_ship(p)) ai_twait[s] = 0;
+			else if (++ai_twait[s] > AI_NTR_WAIT) { ai_ntr[s] = 0; ai_role[s] = ROLE_HOME; cmd_move(s, rx, ry); }
+			continue;
+		}
 		if (st->att_tx >= 0 && udist_tile(s, st->att_tx, st->att_ty) <= 3 && s_ebld < 0) {
 			int q;   /* reached an enemy start location with nothing known there */
 			for (q = 0; q < AI_MAX_P; q++)
@@ -1064,13 +1349,17 @@ static void military(int p)
 			have_t = pick_target(p, &tx, &ty);
 		}
 		if (!have_t || ai_retry[s] > 6) {
-			ai_role[s] = ROLE_HOME; ai_retry[s] = 0;
+			int hr = transport_region(st->home_tx, st->home_ty);
+			ai_retry[s] = 0;
+			if (hr && land_kind(s) && transport_region(u->tx, u->ty) != hr) continue;   /* landed abroad: stays */
+			ai_role[s] = ROLE_HOME; ai_ntr[s] = 0; ai_tslot[s] = W2_NO_UNIT;
 			cmd_move(s, rx, ry);
 			continue;
 		}
 		if (tx == st->att_tx && ty == st->att_ty) ai_retry[s]++;
-		cmd_attack_move(s, tx, ty);
+		send_attacker(s, tx, ty);
 	}
+	if (landed) ai_log(p, "%d attackers landed on the target's island", landed);
 	if (have_t && attackers) { st->att_tx = (int16_t)tx; st->att_ty = (int16_t)ty; }
 	if (!attackers) st->att_tx = st->att_ty = -1;
 
@@ -1091,7 +1380,7 @@ static void military(int p)
 			if (ai_role[s] != ROLE_HOME || !is_idle(&w2.unit[s])) continue;
 			if (keep > 0) { keep--; continue; }
 			ai_role[s] = ROLE_ATTACK; ai_retry[s] = 0;
-			cmd_attack_move(s, tx, ty);
+			send_attacker(s, tx, ty);
 			n++;
 		}
 		ai_log(p, "WAVE %d: %d units attack-move -> %d,%d", st->wave + 1, n, tx, ty);
@@ -1106,6 +1395,7 @@ static void military(int p)
 			int s = s_army[i];
 			if (ai_role[s] == ROLE_HOME && is_idle(&w2.unit[s]) && udist_tile(s, rx, ry) > 4) cmd_move(s, rx, ry);
 		}
+	transports(p);
 	st->info.next_wave_size = ai_wave_size(st->wave) + st->wave_extra + wave_reserve(st->wave);
 	st->info.attackers = attackers;
 	st->info.home_army = home_idle;
@@ -1148,6 +1438,7 @@ static void think(int p)
 	economy(p, &wt);
 	if (st->prog && aiprog_active(p)) train_prog(p); else train_army(p);
 	assign_workers(p);
+	tankers(p);
 	military(p);
 	st->info.active = 1;
 	st->info.thinks++;
@@ -1199,6 +1490,8 @@ void ai_init(void)
 	memset(ai_own, 0, sizeof ai_own);
 	memset(ai_role, 0, sizeof ai_role);
 	memset(ai_retry, 0, sizeof ai_retry);
+	memset(ai_ntr, 0, sizeof ai_ntr); memset(ai_twait, 0, sizeof ai_twait); memset(ai_tfail, 0, sizeof ai_tfail);
+	for (k = 0; k < W2_MAX_UNITS; k++) ai_tslot[k] = W2_NO_UNIT;
 	memset(ai_isprod, 0, sizeof ai_isprod);
 	for (k = 0; k < AI_NCLASSES; k++)
 		for (p = 0; p < 2; p++) {

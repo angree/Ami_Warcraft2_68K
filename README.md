@@ -7,8 +7,8 @@ The engine is our own code in plain C, written from scratch for the Amiga (chunk
 no FPU needed). **No game data is included and none is needed from us: the game runs on the files of
 your own Warcraft II CD**, which you convert once on a PC with the extractor below.
 
-This is an early version (0.5.0): custom games (skirmish) against computer opponents on the maps of
-the CD. See "What works" below. Data converted for 0.1.0 works unchanged.
+This is version 0.6.0: the human and orc campaigns of Tides of Darkness and custom games (skirmish)
+against computer opponents on the maps of the CD. See "What works" below. Data converted for 0.1.0 works unchanged.
 
 ## 1. Extract the data from your own CD (on a PC)
 
@@ -57,8 +57,15 @@ Requirements: 68020 or better (68040 / fast 68030 recommended), AGA, an RTG card
 Developed and tested with 2 MB chip + 64 MB fast RAM; the real minimum has not been measured yet.
 Your own maps (`.pud`) go into a drawer `maps` next to the program.
 
-## 3. What works in 0.5.0
+## 3. What works in 0.6.0
 
+- Both campaigns of Tides of Darkness (14 human and 14 orc missions) with the act screens, the
+  briefings (text, voice, picture) and the movies of your CD, each mission's objectives as in the
+  original ("Objectives" in the in-game menu), the units allowed per mission, rescues and heroes;
+  progress is saved, every mission reached can be replayed.
+- Spells and special abilities of both races (mana, all spells, Demolish), also cast by the computer.
+- Transports: docking at the shore, boarding (up to 6), crossing, unloading; the computer ships
+  troops to other islands when its AI profile asks for it.
 - Custom game against 1–7 computer opponents on the 28 built-in multiplayer maps and the CD's custom
   maps; humans and orcs; gold, lumber and oil; building, training, research and upgrades; land, sea
   and air combat; fog of war; minimap; the original interface, sounds, unit voices and CD music.
@@ -70,6 +77,10 @@ Your own maps (`.pud`) go into a drawer `maps` next to the program.
 - "Amiga bar": the game keeps its full area under the screen's title bar (on RTG a slightly taller
   mode of the same width is used, e.g. 320x256; without one the bar is left out). "Show FPS" puts
   the frame rate into the bar when it is shown.
+
+New in 0.6.0: the campaigns, spells and transports (above), all checked against the original game;
+idle units look for targets once per idle animation loop as in the original (much faster on big
+maps with many units: an orc mission with 126 units went from 7 to 27 fps on RTG 640x480).
 
 New in 0.5.0: much faster drawing. The panel around the map is drawn only where it changed, the
 map area is converted to the screen only in the 32x16 cells that changed (AGA / ECS), and the terrain
@@ -96,7 +107,7 @@ New in 0.2.0: the in-game Options page; gold mines and oil patches can be select
 once explored ("Gold Left"); 320x240 on RTG with the Amiga bar no longer cuts off the bottom of the
 game; the frame counter goes into the title bar.
 
-- Not yet: the campaigns and their briefings, spells, transports, saving games, multiplayer.
+- Not yet: saving games, multiplayer, the Beyond the Dark Portal expansion.
   MorphOS is supported by design but has not been tested yet. Big battles and long scrolling still cost
   more than a quiet screen.
 

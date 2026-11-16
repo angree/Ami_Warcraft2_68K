@@ -5,7 +5,9 @@
 #include "w2.h"
 #include "unit.h"
 #include "assets.h"
+#include "spells.h"
 
+#define STATUS_GFX 323   /* War Data: ui/bloodlust,haste,slow,invisible,shield (5 frames 16x16) */
 #define CORPSE_GFX 120   /* War Data: neutral/units/corpses (72x72, 5-direction columns) */
 /* destroyed site sprites per era (summer, winter, wasteland): large 64x64 (4 frames), small 32x32 */
 static const uint16_t g_site_large[3] = { 121, 163, 191 };
@@ -172,6 +174,23 @@ static void draw_selection(int slot)
 	vline(x0, y0, y1, c); vline(x1, y0, y1, c);
 }
 
+/* spell status icons over the selection box corner (Mac DrawUnitStatusBars 0x00170E46): bloodlust +0,
+ * haste/slow +16, invisible +32, unholy armor +48 px; frames 0..4 of War Data 323 */
+static void draw_status(int slot)
+{
+	static const uint8_t xo[5] = { 0, 16, 16, 32, 48 };
+	const w2_unit_type *t;
+	const W2Spr *s;
+	int b = spells_status_icons(slot), i, cx, cy, bw, bh;
+	if (!b || !(t = w2_unit(w2.unit[slot].type))) return;
+	s = assets_sprite(ASSET_DATA, STATUS_GFX);
+	if (!s) return;
+	bw = t->box_w ? t->box_w : 31; bh = t->box_h ? t->box_h : 31;
+	unit_center(slot, &cx, &cy);
+	for (i = 0; i < 5; i++)
+		if (b & (1 << i)) draw_at(s, i, 0, cx - bw / 2 - 1 + xo[i], cy - bh / 2 - 1, NULL);
+}
+
 static void draw_unit(int slot)
 {
 	const W2Unit *u = &w2.unit[slot];
@@ -185,6 +204,7 @@ static void draw_unit(int slot)
 	if (s && in_view(x, y, bw, bh))
 		draw_at(s, frame, mirror, x, y, assets_remap(u->owner < 8 ? u->owner : -1));
 	if ((u->flags & (W2_UF_SELECTED | W2_UF_ALIVE)) == (W2_UF_SELECTED | W2_UF_ALIVE)) draw_selection(slot);
+	if (u->flags & W2_UF_ALIVE) draw_status(slot);
 }
 
 static void sort_list(uint16_t *a, int32_t *k, int n)
@@ -220,6 +240,7 @@ void unitdraw_draw(void)
 		unit_box(slot, &x, &y, &w, &h);
 		if (!in_view(x - 4, y - 4, w + 8, h + 8)) continue;   /* margin: selection box may exceed the frame */
 		if (!unit_visible_local(slot)) continue;
+		if (spells_hidden_from(slot, w2.local_player)) continue;   /* invisible: only its owner sees it */
 		key = (u->ty + t->tile_h) * W2_TILE + u->oy;
 		key = key * 2 + ((u->flags & W2_UF_BUILDING) ? 0 : 1);   /* same row: unit in front of building */
 		if (u->flags & W2_UF_AIR) { g_air[na] = (uint16_t)slot; g_akey[na++] = key; }
