@@ -14,6 +14,7 @@
 #include "combat.h"
 #include "economy.h"
 #include "spells.h"
+#include "pud.h"
 #include "w2cfg.h"
 
 #define NSP W2_NUM_SPELLS
@@ -625,10 +626,14 @@ static void demolish(int s)
 	static const int8_t tdx[12] = { 1, 1, -1, -1, 0, 0, 1, -1, 2, -2, 0, 0 }, tdy[12] = { 1, -1, 1, -1, 1, -1, 0, 0, 0, 0, 2, -2 };
 	uint16_t hit[8];
 	int x = w2.unit[s].tx, y = w2.unit[s].ty, i;
-	/* f13_1C3C: trees within the diamond of radius 2 are blown away (rocks and walls: see the report) */
+	/* f13_1C3C: rocks (FUN_00169b0a), then trees (FUN_00169b70) within the diamond of radius 2 are
+	 * blown away, then each of the 8 neighbouring walls goes two stages (FUN_00169bde: intact ->
+	 * damaged -> rubble, a damaged one falls at the first) */
+	for (i = 0; i < 12; i++) pud_rock_remove(x + tdx[i], y + tdy[i]);
 	for (i = 0; i < 12; i++)
 		if (in_map(x + tdx[i], y + tdy[i]) && (w2.map.flags[(y + tdy[i]) * w2.map.w + x + tdx[i]] & W2_TF_TREE))
 			econ_clear_tree(x + tdx[i], y + tdy[i]);
+	for (i = 0; i < 8; i++) { pud_wall_stage(x + tdx[i], y + tdy[i]); pud_wall_stage(x + tdx[i], y + tdy[i]); }
 	for (i = 0; i < 8; i++) demolish_hit(s, x + ndx[i], y + ndy[i], hit, i);
 	unit_kill(s);
 }

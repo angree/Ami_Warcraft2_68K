@@ -6,6 +6,7 @@
 #include "combat.h"
 #include "unit.h"
 #include "spells.h"
+#include "pud.h"
 
 #define ALERT_PERIOD   (W2_CYCLES_PER_SECOND_NORMAL * 10u)   /* "under attack" at most every 10 s */
 #define MOVE_FAIL_MAX  3                                     /* move says "arrived" but out of range */
@@ -20,6 +21,7 @@ static uint8_t  c_struck[W2_MAX_UNITS];      /* hit already delivered in this sw
 static uint8_t  c_last[W2_MAX_UNITS];        /* anim_step seen last cycle */
 static uint8_t  c_fail[W2_MAX_UNITS];
 static uint8_t  c_ptx[W2_MAX_UNITS], c_pty[W2_MAX_UNITS];   /* patrol: the other end */
+static uint8_t  c_wall[W2_MAX_UNITS];        /* ATTACK_GROUND is the Mac's wall attack (order 11) */
 /* units on the map sorted by their top row (sorted_build) */
 static uint16_t c_sorted[W2_MAX_UNITS];
 static uint16_t c_rows[W2_MAP_MAX + 1];
@@ -42,7 +44,7 @@ void combat_reset(void)
 {
 	memset(c_resume, 0, sizeof c_resume); memset(c_hold, 0, sizeof c_hold);
 	memset(c_swing, 0, sizeof c_swing); memset(c_struck, 0, sizeof c_struck);
-	memset(c_last, 0, sizeof c_last); memset(c_fail, 0, sizeof c_fail);
+	memset(c_last, 0, sizeof c_last); memset(c_fail, 0, sizeof c_fail); memset(c_wall, 0, sizeof c_wall);
 	memset(c_rtag, 0xFF, sizeof c_rtag); memset(c_acq_target, 0xFF, sizeof c_acq_target); c_sorted_cycle = 0xFFFFFFFFu;
 	memset(c_acq_cycle, 0, sizeof c_acq_cycle);
 	memset(g_score, 0, sizeof g_score); memset(g_kills, 0, sizeof g_kills);
@@ -348,6 +350,10 @@ static void strike(int s, int target, int gx, int gy)
 		if (target >= 0 && alive(target)) {
 			combat_weapon(s, &b, &p);
 			unit_damage(target, combat_roll(b, p, combat_armor(target)), s);
+		} else if (target < 0) {
+			/* Order_AttackHit 0x0012016A: no target unit -> DamageWallTile(+0x84, CalcDamage(u, NULL)) */
+			combat_weapon(s, &b, &p);
+			pud_wall_hit(gx, gy, combat_roll(b, p, 0));
 		}
 		return;
 	}
@@ -476,6 +482,17 @@ void ord_attack(int s) { attack_core(s, 0); }
 void ord_attack_ground(int s)
 {
 	const w2_unit_type *t = ty(s);
+	if (c_wall[s]) {
+		/* FUN_001211F2: order 11 ends as soon as its tile is no wall (any unit kind, melee too) */
+		W2Unit *u = &w2.unit[s];
+		if (!pud_wall_at(u->goal_tx, u->goal_ty) || !t) {
+			c_wall[s] = 0; leave_attack_anim(s);
+			unit_set_order(s, W2_ORD_STILL, W2_NO_UNIT, u->tx, u->ty);
+			return;
+		}
+		attack_core(s, 1);
+		return;
+	}
 	if (!t || t->missile >= W2M_NONE) { unit_set_order(s, W2_ORD_STILL, W2_NO_UNIT, w2.unit[s].tx, w2.unit[s].ty); return; }
 	attack_core(s, 1);
 }
@@ -516,7 +533,7 @@ void ord_die(int s)
 	const w2_unit_type *t;
 	if (s < 0 || s >= W2_MAX_UNITS) return;
 	t = ty(s);
-	c_swing[s] = 0; c_resume[s] = 0; c_hold[s] = 0; c_fail[s] = 0; c_rtag[s] = W2_NO_UNIT;
+	c_swing[s] = 0; c_resume[s] = 0; c_hold[s] = 0; c_fail[s] = 0; c_rtag[s] = W2_NO_UNIT; c_wall[s] = 0;
 	snd_unit(s, 4);
 	if (t && (t->kind == W2_KIND_BUILDING || (t->xflags & W2UX_EXPLODES))) {
 		int cx, cy;
@@ -612,7 +629,7 @@ void combat_area_damage(int px, int py, int rating, int attacker, int layer_mask
 /* ---- commands ------------------------------------------------------------------------------ */
 static void clear_state(int s)
 {
-	c_resume[s] = 0; c_hold[s] = 0; c_fail[s] = 0; c_rtag[s] = W2_NO_UNIT;
+	c_resume[s] = 0; c_hold[s] = 0; c_fail[s] = 0; c_rtag[s] = W2_NO_UNIT; c_wall[s] = 0;
 }
 
 static int ok_slot(int s) { return s >= 0 && s < W2_MAX_UNITS && alive(s); }
@@ -670,6 +687,18 @@ void cmd_attack_ground(int s, int tx, int ty_)
 	}
 	clear_state(s);
 	unit_set_order(s, W2_ORD_ATTACK_GROUND, W2_NO_UNIT, tx, ty_);
+}
+
+int cmd_attack_wall(int s, int tx, int ty_)
+{
+	W2Unit *u;
+	if (!ok_slot(s) || !combat_can_attack(s) || !pud_wall_at(tx, ty_)) return 0;
+	u = &w2.unit[s];
+	if (u->order == W2_ORD_ATTACK_GROUND && c_wall[s] && u->goal_tx == tx && u->goal_ty == ty_) return 1;
+	clear_state(s);
+	c_wall[s] = 1;
+	unit_set_order(s, W2_ORD_ATTACK_GROUND, W2_NO_UNIT, tx, ty_);
+	return 1;
 }
 
 void cmd_attack_move(int s, int tx, int ty_)
@@ -733,6 +762,8 @@ void cmd_smart(int s, int tx, int ty_, int target)
 		cmd_move(s, tx, ty_);
 		return;
 	}
+	/* f10_4692 (right-click handler of the attack class): no enemy unit + a wall tile -> order 11 */
+	if (t->rmb_action == W2_RMB_ATTACK && pud_wall_at(tx, ty_) && cmd_attack_wall(s, tx, ty_)) return;
 	if (t->rmb_action == W2_RMB_HARVEST && tx >= 0 && ty_ >= 0 && tx < w2.map.w && ty_ < w2.map.h &&
 	    (w2.map.flags[ty_ * w2.map.w + tx] & W2_TF_TREE)) {
 		cmd_harvest(s, W2_NO_UNIT, tx, ty_);

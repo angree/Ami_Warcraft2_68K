@@ -50,6 +50,11 @@ void combat_reset(void);                       /* new game: clear module state (
 /* auto engagement from an idle order: remembers the current order (STILL/STAND/ATTACK_MOVE/PATROL)
  * and returns to it when the target is gone; STAND units never leave their tile. */
 void combat_engage(int slot, int target);
+/* attack the wall at (tx,ty) (Mac order 11: Attack button on a wall tile f9_5A8E, right-click of an
+ * attack-class unit f10_4692): melee hits it on the attack event (DamageWallTile with CalcDamage
+ * without armor), ranged units shoot it; the order ends when the tile is no wall any more.
+ * Runs as W2_ORD_ATTACK_GROUND with a combat-private wall mark. 0 = not a wall / cannot attack. */
+int  cmd_attack_wall(int slot, int tx, int ty);
 int  combat_can_attack(int slot);              /* armed, finished, alive */
 int  combat_can_target(int slot, int target);  /* kind/visibility/enemy-independent check of the target mask */
 int  combat_in_range(int slot, int target);

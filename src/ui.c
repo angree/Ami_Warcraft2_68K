@@ -31,6 +31,8 @@
 #include "spells.h"
 #include "unit.h"
 #include "campaign.h"
+#include "combat.h"
+#include "pud.h"
 
 /* ------------------------------------------------------------------ layout (hires units) */
 #define PANEL_W      176
@@ -662,7 +664,10 @@ static void do_target(int px, int py, int tu)
 		if (is_bld(s) && a != W2B_ATTACK && a != W2B_STOP) continue;
 		switch (a) {
 		case W2B_MOVE: if (tu >= 0 && tu != s) cmd_follow(s, tu); else cmd_move(s, tx, ty); break;
-		case W2B_ATTACK: if (tu >= 0 && tu != s) cmd_attack(s, tu); else cmd_attack_move(s, tx, ty); break;
+		case W2B_ATTACK:   /* Mac f9_5A8E: a unit -> attack it, a wall tile -> attack the wall, else attack-move */
+			if (tu >= 0 && tu != s) cmd_attack(s, tu);
+			else if (!(pud_wall_at(tx, ty) && cmd_attack_wall(s, tx, ty))) cmd_attack_move(s, tx, ty);
+			break;
 		case W2B_PATROL: cmd_patrol(s, tx, ty); break;
 		case W2B_ATTACK_GROUND: cmd_attack_ground(s, tx, ty); break;
 		case W2B_HARVEST: cmd_harvest(s, tu, tx, ty); break;

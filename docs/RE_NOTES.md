@@ -436,3 +436,22 @@ clicked tile's REGM region (A5+6A4E, loaded by f8_41CA). Unloading only on a sha
 once. Computer: role 3 (f8_2010 0x142010) collects up to 6 "needs transport" units for one region,
 sails to a random coast tile of it (AI_RandomDirSearch 0x141D06); only profiles asking for transports
 (field 26) use them.
+
+## 14. Walls and rocks (2026-11-19, checked against the Mac binary)
+
+Wall megatiles are fixed for all eras (base A5+56EC = 0x10): 16..33 human intact, 34..51 orc intact,
+52..87 damaged (still blocks), 88..101 rubble. The next stage of each wall megatile comes from a per-era
+table loaded by f13_1386 (0x169386): War Data 6 / 22 / 14 (summer / winter / wasteland, ids at
+A5-4D34[era]); the same routine loads 7/23/15 (forest) and 8/24/16 (rocks, base 16 + (wall rows-1) +
+(forest rows-1); the cleared rock is shown as base+24). Bits 11..15 of the map word are the wall's
+damage counter. DamageWallTile 0x1320A8: d = dmg >> 2 (min 1) added to the counter; at >= 20
+f13_1EA2 0x169EA2 moves the tile one stage and clears the counter. Rubble: flags & 0xFF63 (plain land),
+region updated, every intact orthogonal neighbour wall goes one stage, no sound. Damage sources: melee
+Order_AttackHit 0x12016A with no target unit (CalcDamage without armour), non-splash missiles on impact
+(MissileState6_Impact 0x129EEA), splash missiles (A5+2988 flag: cannons, catapult rock, ballista bolt)
+via MissileSplash 0x129D52 — centre with the rating, the 4 neighbours with rating/4. Targeting: Attack
+button hook f9_5A8E 0x14DA8E (unit -> order 9, wall tile -> order 11 wall attack, else 10 attack-move);
+right-click on a wall gives order 11 only for the attack class (f10_4692 0x154692); order 11 ends when
+the tile is no longer a wall (0x1211F2). Demolish f13_1C3C 0x169C3C: rocks on the radius-2 diamond
+(FUN_00169b0a, reshapes the 3x3 around each with the rock table), then trees, then the 8 neighbouring
+walls two stages each. Rocks fall only to Demolish. The computer AI never targets walls.

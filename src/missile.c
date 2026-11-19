@@ -5,11 +5,12 @@
 #include "assets.h"
 #include "combat.h"
 #include "unit.h"
+#include "pud.h"
 
 typedef struct Missile {
 	uint8_t  used, type, cls, anim_n;   /* anim_n: animation frames (frames/5 for 9-dir sprites) */
 	uint8_t  frame, wait, dir, bounces;
-	uint8_t  layer, stype, sowner, pad;
+	uint8_t  layer, stype, sowner, wsplash;   /* wsplash: the Mac's splash missile (walls hit too) */
 	int16_t  x, y, x0, y0, x1, y1;      /* current position, flight segment */
 	uint16_t k, n;                      /* step k of n */
 	int16_t  shooter;                   /* unit slot or -1 */
@@ -24,7 +25,13 @@ typedef struct Missile {
 	uint8_t  phase, fwait, fend, pad3;  /* orbit index; frame timer; last frame + 1 (effects) */
 } Missile;
 
-enum { DM_NONE, DM_DIRECT, DM_AREA, DM_AREA_FIXED };
+enum { DM_NONE, DM_DIRECT, DM_AREA, DM_AREA_FIXED, DM_WALL };   /* DM_WALL: no target unit, dmg -> wall tile */
+
+/* the original's splash flag A5+2988 (MissileSplash 0x00129D52: walls on the centre + 4 neighbours) */
+static int mac_splash(int type)
+{
+	return type == W2M_BIG_CANNON || type == W2M_CATAPULT_ROCK || type == W2M_BALLISTA_BOLT || type == W2M_SMALL_CANNON;
+}
 
 /* missiles with the original's splash routine (RE_NOTES §5: big cannon, rock, bolt, small cannon)
  * plus the bouncing ones (gryphon hammer, dragon breath, fireball: same geometry, NIEPEWNE) */
@@ -155,7 +162,13 @@ static void launch(int shooter, int type, int sx, int sy, int dx, int dy, int ta
 	} else if (weapon && m->shooter >= 0) {
 		int b, p;
 		combat_weapon(shooter, &b, &p);
-		if (area_type(type) || !tvalid) {
+		m->wsplash = (uint8_t)mac_splash(type);
+		if (!tvalid && !m->wsplash) {
+			/* Missile_Spawn 0x001295DE: a non-splash missile carries CalcDamage(u, NULL) (no armor);
+			 * with no target unit the impact only hits a wall tile (MissileState6_Impact 0x00129EEA) */
+			m->mode = DM_WALL;
+			m->dmg = (uint16_t)combat_roll(b, p, 0);
+		} else if (area_type(type) || !tvalid) {
 			m->mode = DM_AREA;                     /* attack rating, armor applied per victim */
 			m->dmg = (uint16_t)(b + p > 255 ? 255 : b + p);
 		} else {
@@ -448,6 +461,20 @@ static void impact(Missile *m)
 		if (m->dmg && unit_same(m->target, g_tgen[mi])) unit_damage(m->target, m->dmg, attacker);
 	} else if (m->mode == DM_AREA || m->mode == DM_AREA_FIXED) {
 		combat_area_damage(x, y, m->dmg, attacker, m->layer, m->mode == DM_AREA_FIXED);
+	} else if (m->mode == DM_WALL) {
+		pud_wall_hit(x >> 5, y >> 5, m->dmg);
+		m->mode = DM_NONE;
+	}
+	if (m->wsplash && m->mode == DM_AREA) {
+		/* MissileSplash: wall damage = the missile's rating on the centre tile, rating/4 on the four
+		 * orthogonal neighbours (each then >> 2, at least 1, by DamageWallTile) */
+		int tx = x >> 5, ty = y >> 5, q = m->dmg / 4;
+		pud_wall_hit(tx, ty, m->dmg);
+		pud_wall_hit(tx + 1, ty, q);
+		pud_wall_hit(tx - 1, ty, q);
+		pud_wall_hit(tx, ty + 1, q);
+		pud_wall_hit(tx, ty - 1, q);
+		m->wsplash = 0;
 	}
 	if (d->impact_missile != W2_NONE) spawn(d->impact_missile, x, y, x, y);
 	if (d->impact_sound != W2_NONE) snd_play(d->impact_sound, x, y);

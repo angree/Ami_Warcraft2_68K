@@ -10,7 +10,12 @@
 #include "economy.h"
 
 /* classify one tile from its MTXM value and the era's tile map group flags */
-static unsigned tile_flags(unsigned v)
+#define WALL_BASE    16          /* Mac A5+56EC: first wall megatile (all eras) */
+#define WALL_DAMAGED 52          /* base + 0x24: first damaged wall megatile */
+#define WALL_RUBBLE  88          /* base + 0x48: first rubble megatile */
+#define WALL_END     102         /* base + 0x56 */
+
+static unsigned tile_flags(unsigned v, int mega)
 {
 	/* tile-map group flags == the PUD SQM movement map (verified identical, low byte, on all 60 Mac
 	 * War Data PUDs and the 8 CD PUDs). The Mac reads SQM straight into its map-flag words and tests:
@@ -30,7 +35,12 @@ static unsigned tile_flags(unsigned v)
 	if (gf & 0x02) f |= W2_TF_NOWALK | W2_TF_NOBUILD;    /* shallow: no land unit, no ship (not WATER) */
 	if (gf & 0x80) {
 		f |= W2_TF_NOWALK | W2_TF_NOBUILD;
-		if (gf & 0x08) f |= W2_TF_WALL;
+		if (gf & 0x08) {
+			/* the wall groups also hold the rubble pieces (j 4/6/7): the Mac clears 0x9C of the SQM
+			 * word when a wall falls (f13_1EA2), leaving plain land */
+			if (mega >= WALL_RUBBLE && mega < WALL_END) return W2_TF_LAND;
+			f |= W2_TF_WALL;
+		}
 		else if ((hi == 0 && sg == 7) || hi == 7) f |= W2_TF_TREE;
 		else if ((hi == 0 && sg == 8) || hi == 4) f |= W2_TF_ROCK;
 		/* else: impassable shoreline, neither harvestable nor destructible */
@@ -43,9 +53,134 @@ void pud_reclassify_tile(int tx, int ty)
 	int i = ty * w2.map.w + tx;
 	int m = assets_tile_to_mega(w2.map.tile[i]);
 	w2.map.mega[i] = (uint16_t)(m < 0 ? 0 : m);
-	w2.map.flags[i] = (uint16_t)((w2.map.flags[i] & W2_TF_BUILDING) | tile_flags(w2.map.tile[i]));
+	w2.map.flags[i] = (uint16_t)((w2.map.flags[i] & W2_TF_BUILDING) | tile_flags(w2.map.tile[i], m));
 	if (!(w2.map.flags[i] & W2_TF_TREE)) w2.map.wood[i] = 0;
 	w2.map.version++;
+}
+
+/* ---- destructible terrain: walls and rocks (Mac CODE 6/13, see pud.h) ------------------------------- */
+#define ROCK_MAX 512             /* u16 cells of the rock table (War Data 8: 390) */
+#define INV_MAX  256             /* megatiles with a reverse lookup (walls 16..101, rocks ~142..180) */
+static uint8_t  g_wall_next[WALL_END - WALL_BASE];   /* next stage megatile, 0 = none */
+static uint16_t g_rock[ROCK_MAX];                    /* rows of g_rock_w cells: [0] flag/id, [1..9] per 3x3 spot */
+static int      g_rock_w, g_rock_rows, g_rock_base;  /* row r = megatile base + r - 1 */
+static uint16_t g_inv[INV_MAX];                      /* megatile -> first MTXM value showing it, 0 none */
+#define TILE_LAND 0x0050u        /* light ground: flags of a blown-away rock (SQM 0x81 & ~0x80) */
+
+static int in_map(int x, int y) { return (unsigned)x < (unsigned)w2.map.w && (unsigned)y < (unsigned)w2.map.h; }
+
+/* the three per-era tables (Mac f13_1386: resources 1006/1022/1014 + 0..2 = War Data 6..8 summer,
+ * 22..24 winter, 14..16 wasteland; header u16 cells-per-row, u16 rows; rows are u16, little-endian).
+ * Table 1 = walls (pairs: id, next), table 2 = forest (only its row count is used: it places the rock
+ * megatiles after the forest ones), table 3 = rocks. */
+static void terrain_tables(int era)
+{
+	static const short first[4] = { 6, 22, 14, 14 };
+	unsigned long n; unsigned char *p; int i, k, rows[3] = { 0, 0, 0 }, v;
+	memset(g_wall_next, 0, sizeof g_wall_next); g_rock_w = g_rock_rows = 0; g_rock_base = 0;
+	for (k = 0; k < 3; k++) {
+		p = assets_load(ASSET_DATA, first[era & 3] + k, &n);
+		if (!p) continue;
+		if (n >= 4) {
+			int w = W2_LE16(p), r = W2_LE16(p + 2), cells = (int)((n - 4) / 2);
+			rows[k] = r;
+			if (k == 0 && w == 2)
+				for (i = WALL_BASE; i < WALL_END; i++) {
+					int c = (i - WALL_BASE + 1) * 2 + 1;
+					if (c < cells) { v = W2_LE16(p + 4 + c * 2) + WALL_BASE - 1; if (v > 0 && v < 256) g_wall_next[i - WALL_BASE] = (uint8_t)v; }
+				}
+			if (k == 2 && w >= 10 && cells <= ROCK_MAX) {
+				for (i = 0; i < cells; i++) g_rock[i] = (uint16_t)W2_LE16(p + 4 + i * 2);
+				g_rock_w = w; g_rock_rows = cells / w < r ? cells / w : r;
+			}
+		}
+		war_free(p);
+	}
+	if (rows[0] > 0 && rows[1] > 0) g_rock_base = WALL_BASE + (rows[0] - 1) + (rows[1] - 1);
+	else g_rock_rows = 0;
+	/* no table: damaged = intact + 36, rubble = the group's j 4 piece is not known -> plain rubble 88 */
+	for (i = WALL_BASE; i < WALL_END; i++)
+		if (!g_wall_next[i - WALL_BASE]) g_wall_next[i - WALL_BASE] = (uint8_t)(i < WALL_DAMAGED ? i + 36 : i < WALL_RUBBLE ? WALL_RUBBLE : i);
+	/* reverse lookup megatile -> MTXM value (solid 0x00G0.., boundary 0x0GGJ: group = v >> 4) */
+	memset(g_inv, 0, sizeof g_inv);
+	for (v = 0x0010; v < 0x0A00; v++) {
+		int m = assets_tile_to_mega((unsigned)v);
+		if (m > 0 && m < INV_MAX && !g_inv[m]) g_inv[m] = (uint16_t)v;
+	}
+}
+
+int pud_wall_at(int tx, int ty)
+{
+	return in_map(tx, ty) && (w2.map.flags[ty * w2.map.w + tx] & W2_TF_WALL);
+}
+
+/* show megatile m at tile i: through its MTXM value when it has one (flags follow), else drawn
+ * directly with the tile's present value (and flags) kept */
+static void set_mega(int x, int y, int m)
+{
+	int i = y * w2.map.w + x;
+	if (m > 0 && m < INV_MAX && g_inv[m]) { w2.map.tile[i] = g_inv[m]; pud_reclassify_tile(x, y); }
+	else { w2.map.mega[i] = (uint16_t)m; w2.map.version++; }
+}
+
+void pud_wall_stage(int tx, int ty)
+{
+	static const int8_t nx[4] = { 1, -1, 0, 0 }, ny[4] = { 0, 0, 1, -1 };
+	int i, m, n, k;
+	if (!pud_wall_at(tx, ty)) return;
+	i = ty * w2.map.w + tx;
+	m = w2.map.mega[i];
+	if (m < WALL_BASE || m >= WALL_RUBBLE) { w2_log("wall: tile %d,%d megatile %d is no wall stage", tx, ty, m); return; }
+	n = g_wall_next[m - WALL_BASE];
+	if (!g_inv[n]) return;                       /* tileset without that piece: leave it */
+	w2.map.tile[i] = g_inv[n];
+	pud_reclassify_tile(tx, ty);                 /* new flags; the damage counter (wood[]) restarts */
+	if (n >= WALL_RUBBLE) {
+		w2.map.flags[i] &= (uint16_t)~(W2_TF_WALL | W2_TF_NOWALK | W2_TF_NOBUILD);
+		w2_log("wall: %d,%d destroyed (cycle %lu)", tx, ty, (unsigned long)w2.cycle);
+		/* the Mac cracks every intact wall next to the fallen one (FUN_00169e26 x4) */
+		for (k = 0; k < 4; k++) {
+			int x = tx + nx[k], y = ty + ny[k];
+			if (!pud_wall_at(x, y)) continue;
+			m = w2.map.mega[y * w2.map.w + x];
+			if (m >= WALL_BASE && m < WALL_DAMAGED) pud_wall_stage(x, y);
+		}
+	}
+}
+
+void pud_wall_hit(int tx, int ty, int dmg)
+{
+	int i, d, c;
+	if (!pud_wall_at(tx, ty)) return;
+	i = ty * w2.map.w + tx;
+	d = (dmg & 0xFF) >> 2;
+	if (!d) d = 1;
+	c = w2.map.wood[i] + d;
+	if (c < 20) w2.map.wood[i] = (uint8_t)c;
+	else pud_wall_stage(tx, ty);
+}
+
+void pud_rock_remove(int tx, int ty)
+{
+	int dx, dy, p;
+	if (!in_map(tx, ty) || !(w2.map.flags[ty * w2.map.w + tx] & W2_TF_ROCK) || !g_rock_rows) return;
+	for (dy = -1, p = 1; dy <= 1; dy++)
+		for (dx = -1; dx <= 1; dx++, p++) {
+			int x = tx + dx, y = ty + dy, i, r, e, m;
+			if (!in_map(x, y)) continue;
+			i = y * w2.map.w + x;
+			if (!(w2.map.flags[i] & W2_TF_ROCK)) continue;
+			r = (int)w2.map.mega[i] - g_rock_base + 1;
+			if (r < 1 || r >= g_rock_rows) continue;
+			if (g_rock[r * g_rock_w] & 0xF000) continue;           /* piece that never changes */
+			e = g_rock[r * g_rock_w + p];
+			m = g_rock_base - 1 + (e & 0xFFF);
+			if (e & 0xF000) {                                       /* gone: land (SQM 0x81 -> 0x01) */
+				w2.map.tile[i] = TILE_LAND;
+				pud_reclassify_tile(x, y);
+				w2.map.mega[i] = (uint16_t)m;
+			} else set_mega(x, y, m);
+		}
 }
 
 static int ctrl_from_ownr(int o)
@@ -113,6 +248,7 @@ int pud_load_mem(const uint8_t *d, uint32_t size)
 	w2.unit_hi = 0; w2.cycle = 0; w2.select_n = 0; w2.game_over = 0;
 	w2.map.w = w; w2.map.h = h;
 	w2.map.era = assets_era();
+	terrain_tables(w2.map.era);
 
 	s = sec(d, size, "OWNR", &len);
 	for (i = 0; i < W2_MAX_PLAYERS; i++) {
