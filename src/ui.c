@@ -911,7 +911,7 @@ static void info_single(int s)
 	draw_gfu(g_art.info, g_art.info_n, frame, 0, INFO_Y, &g_full);
 	draw_icon(t->icon, PORTRAIT_X, PORTRAIT_Y, u->owner, 0);
 	two_line_name(t->name, 114, 170);
-	if (u->owner != W2_NEUTRAL && !(t->xflags & W2UX_RESOURCE)) {
+	if (u->owner != W2_NEUTRAL && (!(t->xflags & W2UX_RESOURCE) || (t->flags & W2UF_OIL_PLATFORM))) {
 		hp_bar(PORTRAIT_X - 1, y0 + 51, 48, 6, u->hp, t->hp);
 		snprintf(b, sizeof b, "%d/%d", u->hp, t->hp);
 		text_c(FONT_SMALL, FC_WHITE, PORTRAIT_X + 23, y0 + 60, b);

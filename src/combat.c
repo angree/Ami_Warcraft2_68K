@@ -72,6 +72,15 @@ static int alive(int s)
 
 static const w2_unit_type *ty(int s) { return w2_unit(w2.unit[s].type); }
 
+/* never a target: indestructible types and the neutral resources (gold mine, oil patch). An oil
+ * PLATFORM also carries the resource flag but is a player's building: ships destroy it (player
+ * report 2026-11-19, human/orc mission 3; the original's destroyers shoot enemy platforms). */
+static int untouchable(const w2_unit_type *t)
+{
+	if (t->xflags & W2UX_INDESTRUCTIBLE) return 1;
+	return (t->xflags & W2UX_RESOURCE) && !(t->flags & W2UF_OIL_PLATFORM);
+}
+
 static int is_archer(unsigned type)
 {
 	return type == W2U_ARCHER || type == W2U_AXETHROWER || type == W2U_RANGER || type == W2U_BERSERKER;
@@ -208,7 +217,7 @@ int combat_can_target(int s, int target)
 	if (!alive(target) || target == s) return 0;
 	a = ty(s); b = ty(target);
 	if (!a || !b) return 0;
-	if (b->xflags & (W2UX_INDESTRUCTIBLE | W2UX_RESOURCE)) return 0;
+	if (untouchable(b)) return 0;
 	if (b->kind == W2_KIND_MARKER || !b->hp) return 0;
 	if (!(a->can_target & layer_of(target))) return 0;
 	if ((b->flags & W2UF_SUBMARINE) && !(a->flags & (W2UF_SEE_SUBMARINE | W2UF_SUBMARINE))) return 0;
@@ -611,7 +620,7 @@ void combat_area_damage(int px, int py, int rating, int attacker, int layer_mask
 	for (i = 0; i < n; i++) {
 		int v = g_victims[i], cx, cy, dx, dy, m, d, h, dmg;
 		const w2_unit_type *t = ty(v);
-		if (!alive(v) || !t || (t->xflags & (W2UX_INDESTRUCTIBLE | W2UX_RESOURCE)) || !t->hp) continue;
+		if (!alive(v) || !t || untouchable(t) || !t->hp) continue;
 		unit_center(v, &cx, &cy);
 		dx = cx - px; dy = cy - py;
 		m = dx * dx > dy * dy ? dx * dx : dy * dy;

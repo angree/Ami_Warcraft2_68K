@@ -400,6 +400,14 @@ static void begin_death(int slot)
 	deselect(slot);
 	count_unit(u, -1);
 	u->flags = (uint16_t)((u->flags & ~(W2_UF_ALIVE | W2_UF_SELECTED)) | W2_UF_DYING);
+	{   /* a destroyed oil platform gives its oil patch back with the oil left (Wargus ReplaceOnDie) */
+		const w2_unit_type *pt = w2_unit(u->type);
+		if (pt && (pt->flags & W2UF_OIL_PLATFORM) && !(u->flags & W2_UF_INSIDE)) {
+			uint32_t left = u->res_left;
+			int p = unit_create(W2U_OIL_PATCH, W2_NEUTRAL, u->tx, u->ty);
+			if (p >= 0) { w2.unit[p].res_left = left; w2.unit[p].res_amount = (uint16_t)(left / 100u); }
+		}
+	}
 	u->order = W2_ORD_DIE; u->order_state = 0; u->target = W2_NO_UNIT;
 	u->hp = 0;
 	econ_recount(owner);

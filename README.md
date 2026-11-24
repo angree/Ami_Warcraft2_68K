@@ -7,7 +7,7 @@ The engine is our own code in plain C, written from scratch for the Amiga (chunk
 no FPU needed). **No game data is included and none is needed from us: the game runs on the files of
 your own Warcraft II CD**, which you convert once on a PC with the extractor below.
 
-This is version 0.6.1: the human and orc campaigns of Tides of Darkness and custom games (skirmish)
+This is version 0.6.2: the human and orc campaigns of Tides of Darkness and custom games (skirmish)
 against computer opponents on the maps of the CD. See "What works" below. Data converted for 0.1.0 works unchanged.
 
 ## 1. Extract the data from your own CD (on a PC)
@@ -57,7 +57,7 @@ Requirements: 68020 or better (68040 / fast 68030 recommended), AGA, an RTG card
 Developed and tested with 2 MB chip + 64 MB fast RAM; the real minimum has not been measured yet.
 Your own maps (`.pud`) go into a drawer `maps` next to the program.
 
-## 3. What works in 0.6.1
+## 3. What works in 0.6.2
 
 - Both campaigns of Tides of Darkness (14 human and 14 orc missions) with the act screens, the
   briefings (text, voice, picture) and the movies of your CD, each mission's objectives as in the
@@ -77,6 +77,10 @@ Your own maps (`.pud`) go into a drawer `maps` next to the program.
 - "Amiga bar": the game keeps its full area under the screen's title bar (on RTG a slightly taller
   mode of the same width is used, e.g. 320x256; without one the bar is left out). "Show FPS" puts
   the frame rate into the bar when it is shown.
+
+New in 0.6.2: ships attack and destroy enemy oil platforms, as in the original (they could not
+target them before, which blocked the sea missions); a destroyed platform gives its oil patch back with
+the oil that was left.
 
 New in 0.6.1: walls can be attacked and destroyed as in the original (Attack button or right-click
 on a wall; a wall cracks, then falls to passable rubble; catapults, cannons and Demolish too; Demolish
