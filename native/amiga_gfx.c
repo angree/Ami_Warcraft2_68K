@@ -38,6 +38,8 @@
 #include <proto/intuition.h>
 #include <proto/graphics.h>
 #include <intuition/intuition.h>
+#include <intuition/intuitionbase.h>
+#include <graphics/gfxbase.h>
 #include <intuition/screens.h>
 #include <intuition/pointerclass.h>
 #include <graphics/gfx.h>
