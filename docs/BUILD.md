@@ -22,7 +22,7 @@ wsl -d Ubuntu-22.04 sh /mnt/d/GITHUB/Ami_Warcraft2/build/w.sh build/build.sh cle
   `main_amiga.c`, listed explicitly). Add game files without touching the script.
 - A `src/` file that defines `int game_init(void)` switches `main_amiga.c` to the real game hooks
   (`-DW2_HAVE_GAME`); otherwise its stub test pattern runs.
-- Env: `DEPLOY=dir` (default `C:\temp\amiga_w2\work`), `DEPLOY_AROS`, `DEPLOY_PLAY` (`none` skips),
+- Env: `DEPLOY=dir` (default `D:\GITHUB\_AmiW2-poza-repo\emu\work`), `DEPLOY_AROS`, `DEPLOY_PLAY` (`none` skips),
   `W2_EXCLUDE="a.c b.c"`, `SHELL_ONLY=1` (platform shell only, ignore all game files), `STRICT=1` (-Werror).
 - Gates: libm881 in the link trace = refused; FPU mnemonics in `native/*.s` = refused; never stripped.
 - Icons: `tools/icons/draw_icons.py` (our own drawing -> 36x40 PNG) + `tools/mkicon_newicons.py` (from the build instructions, 15-ikony-newicons.md: NewIcons + planar fallback, WBTOOL, 2 MB stack, `--check` in the build).
@@ -37,7 +37,7 @@ wsl -d Ubuntu-22.04 sh /mnt/d/GITHUB/Ami_Warcraft2/build/w.sh build/build.sh cle
   `w2_frame_count`.
 - `src/main_amiga.c` — shell: log, trap, cfg, screen, audio, loop, autoinput.
 
-## Runtime (C:\temp\amiga_w2, copied from the EU2 runtime)
+## Runtime (D:\GITHUB\_AmiW2-poza-repo\emu, copied from the EU2 runtime)
 
 | file | what |
 |---|---|
@@ -57,7 +57,7 @@ Configs (`winuae\`): `w2-ref020.uae` (reference: 68020, no FPU, no JIT, -80 %, A
 start-w2.ps1 -Config w2-ref020.uae                 # boots once, waits for jobrun
 job-w2.ps1   -Script "Stack 2000000`nWork:w2"      # run anything inside the guest
 test-w2.ps1  -Tag ref_aga -CfgLines "backend=aga"  # headless: cfg + autoinput, host shot, log, guest PPM->PNG
-shot-w2.ps1  -Out C:\temp\amiga_w2\shots\x.png     # PrintWindow of OUR window
+shot-w2.ps1  -Out D:\GITHUB\_AmiW2-poza-repo\emu\shots\x.png     # PrintWindow of OUR window
 stop-w2.ps1  -Config w2-ref020.uae                 # WM_CLOSE to OUR instance only
 ```
 

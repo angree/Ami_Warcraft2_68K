@@ -3,10 +3,10 @@
 #   wsl -d Ubuntu-22.04 sh /mnt/d/GITHUB/Ami_Warcraft2/build/w.sh build/build.sh          build + deploy
 #   ... build/build.sh clean                                                              objects from scratch
 # Environment:
-#   DEPLOY=<dir>        deploy folder (default /mnt/c/temp/amiga_w2/work = the guest's Work:)
-#   DEPLOY_AROS=<dir>   copy for the AROS test guest (default /mnt/c/temp/amiga_w2/work-aros if it exists;
+#   DEPLOY=<dir>        deploy folder (default /mnt/d/GITHUB/_AmiW2-poza-repo/emu/work = the guest's Work:)
+#   DEPLOY_AROS=<dir>   copy for the AROS test guest (default /mnt/d/GITHUB/_AmiW2-poza-repo/emu/work-aros if it exists;
 #                       DEPLOY_AROS=none to skip)
-#   DEPLOY_PLAY=<dir>   copy for the user's play guest (default /mnt/c/temp/amiga_w2/work-play if it exists;
+#   DEPLOY_PLAY=<dir>   copy for the user's play guest (default /mnt/d/GITHUB/_AmiW2-poza-repo/emu/work-play if it exists;
 #                       none to skip). Its Work:run starts no job queue, so Workbench comes up normally.
 #   W2_EXCLUDE="a.c b.c" more src/ files to leave out of the game (on top of the fixed list below)
 #   SHELL_ONLY=1        build w2 from the platform shell alone (main_amiga.c stub test pattern + w2cfg.c),
@@ -21,9 +21,9 @@ set -e
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$HOME/w2-build
 OBJ=$WORK/obj
-DEPLOY=${DEPLOY:-/mnt/c/temp/amiga_w2/work}
-if [ -z "$DEPLOY_AROS" ] && [ -d /mnt/c/temp/amiga_w2/work-aros ]; then DEPLOY_AROS=/mnt/c/temp/amiga_w2/work-aros; fi
-if [ -z "$DEPLOY_PLAY" ] && [ -d /mnt/c/temp/amiga_w2/work-play ]; then DEPLOY_PLAY=/mnt/c/temp/amiga_w2/work-play; fi
+DEPLOY=${DEPLOY:-/mnt/d/GITHUB/_AmiW2-poza-repo/emu/work}
+if [ -z "$DEPLOY_AROS" ] && [ -d /mnt/d/GITHUB/_AmiW2-poza-repo/emu/work-aros ]; then DEPLOY_AROS=/mnt/d/GITHUB/_AmiW2-poza-repo/emu/work-aros; fi
+if [ -z "$DEPLOY_PLAY" ] && [ -d /mnt/d/GITHUB/_AmiW2-poza-repo/emu/work-play ]; then DEPLOY_PLAY=/mnt/d/GITHUB/_AmiW2-poza-repo/emu/work-play; fi
 export PATH=/opt/amiga/bin:$PATH
 [ "$1" = "clean" ] && rm -rf "$WORK"
 mkdir -p "$OBJ" "$DEPLOY"

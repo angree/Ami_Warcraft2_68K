@@ -6,7 +6,7 @@
 # Rules (!instrukcje 10-68k-2D.md): -mcpu=68020 -msoft-float, never -m68040/-lc/-lpthread, NEVER strip,
 # -fbbb without i and e, fp_*.c with -fno-builtin linked ahead of -lm, refuse a link that pulls in libm881.
 param([string]$Toolchain = "C:\amiga-gcc", [string]$Work = "D:\GITHUB\_AmiW2-poza-repo\wbuild",
-      [string]$Deploy = "C:\temp\amiga_w2\work", [string]$DeployAros = "", [string]$DeployPlay = "",
+      [string]$Deploy = "D:\GITHUB\_AmiW2-poza-repo\emu\work", [string]$DeployAros = "", [string]$DeployPlay = "",
       [switch]$NoDeploy, [switch]$Strict)
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
@@ -84,8 +84,8 @@ function DeployTo([string]$d, [bool]$play) {
 }
 if (-not $NoDeploy) {
 	DeployTo $Deploy $false
-	if ($DeployAros -eq "" -and (Test-Path "C:\temp\amiga_w2\work-aros")) { $DeployAros = "C:\temp\amiga_w2\work-aros" }
-	if ($DeployPlay -eq "" -and (Test-Path "C:\temp\amiga_w2\work-play")) { $DeployPlay = "C:\temp\amiga_w2\work-play" }
+	if ($DeployAros -eq "" -and (Test-Path "D:\GITHUB\_AmiW2-poza-repo\emu\work-aros")) { $DeployAros = "D:\GITHUB\_AmiW2-poza-repo\emu\work-aros" }
+	if ($DeployPlay -eq "" -and (Test-Path "D:\GITHUB\_AmiW2-poza-repo\emu\work-play")) { $DeployPlay = "D:\GITHUB\_AmiW2-poza-repo\emu\work-play" }
 	if ($DeployAros -and $DeployAros -ne "none") { DeployTo $DeployAros $false; Write-Output "also deployed to $DeployAros" }
 	if ($DeployPlay -and $DeployPlay -ne "none") { DeployTo $DeployPlay $true; Write-Output "also deployed to $DeployPlay" }
 }

@@ -11,7 +11,7 @@ natively on Windows. This is the way version 0.6.2 was built, while WSL was unav
 | Python 3 (`py` launcher) with Pillow | Windows install | Workbench icons (`tools/icons/draw_icons.py`, `tools/mkicon_newicons.py`), release gate (`build/release-gate.py`) |
 | PowerShell 5.1 | part of Windows | the build scripts |
 | `gh` (GitHub CLI), logged in | Windows install | publishing a release |
-| WinUAE runtime of this project | `C:\temp\amiga_w2` (`uae\winuae-w2.exe`, configs, boot disks, `work*` folders) | tests in the emulator |
+| WinUAE runtime of this project | `D:\GITHUB\_AmiW2-poza-repo\emu` (`uae\winuae-w2.exe`, configs, boot disks, `work*` folders) | tests in the emulator |
 
 It is the same compiler (gcc 6.5.0b, libnix) and the same flags as the WSL build in `build/build.sh`:
 `-mcpu=68020 -msoft-float -noixemul -O1 -fomit-frame-pointer -fbbb=abcfhlmnprsz0 -std=gnu99`, never
@@ -25,7 +25,7 @@ powershell -ExecutionPolicy Bypass -File D:\GITHUB\Ami_Warcraft2\build\build-win
 ```
 
 - Objects and binaries go to `D:\GITHUB\_AmiW2-poza-repo\wbuild` (outside the repository).
-- Deployed to the emulator folders `C:\temp\amiga_w2\work` (test guest), `work-aros` and `work-play`
+- Deployed to the emulator folders `D:\GITHUB\_AmiW2-poza-repo\emu\work` (test guest), `work-aros` and `work-play`
   (your play guest) with fresh icons and the `run` start script (LF line ends).
 - Options: `-NoDeploy` (build only), `-Deploy <dir>`, `-DeployAros none`, `-DeployPlay none`,
   `-Strict` (warnings are errors), `-Toolchain <dir>` (another amiga-gcc folder).
@@ -146,10 +146,10 @@ powershell -ExecutionPolicy Bypass -File E:\morphos_w2\w2-test.ps1 -MaxMin 15
 ## 7. If the emulator folder is missing
 
 `diskguard` moves folders from `C:\temp` to the NAS (`I:\temp_from_c\auto\...`) when drive C: runs
-low. If `C:\temp\amiga_w2\uae\winuae-w2.exe` is missing, look in `I:\temp_from_c\auto\amiga_w2` and
+low. If `D:\GITHUB\_AmiW2-poza-repo\emu\uae\winuae-w2.exe` is missing, look in `I:\temp_from_c\auto\amiga_w2` and
 copy it back (a directory junction to the NAS does not work, I: is a network drive). It happened on
 2026-11-23 and again on 2026-11-25 (drive C: at 5-9 GB free); add `amiga_w2` to diskguard's exceptions:
 
 ```
-robocopy I:\temp_from_c\auto\amiga_w2 C:\temp\amiga_w2 /E /COPY:DAT /R:1 /W:1
+robocopy I:\temp_from_c\auto\amiga_w2 D:\GITHUB\_AmiW2-poza-repo\emu /E /COPY:DAT /R:1 /W:1
 ```

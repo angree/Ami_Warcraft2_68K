@@ -1,9 +1,9 @@
 # Screenshot OUR guest window with PrintWindow (works when covered; takes control of nothing).
-#   shot-w2.ps1 -Out C:\temp\amiga_w2\shots\x.png [-Config w2-ref020.uae]
+#   shot-w2.ps1 -Out D:\GITHUB\_AmiW2-poza-repo\emu\shots\x.png [-Config w2-ref020.uae]
 # Prints the number of distinct colours sampled: exactly 1 means the capture failed, not the program.
 param([Parameter(Mandatory)][string]$Out, [string]$Config = "w2-ref020.uae")
-$OurExe = "C:\temp\amiga_w2\uae\winuae-w2.exe"   # the ONLY executable these scripts may touch: exact ExecutablePath
-# AND C:\temp\amiga_w2 + our config in the command line. Never by name, window title or "winuae" match.
+$OurExe = "D:\GITHUB\_AmiW2-poza-repo\emu\uae\winuae-w2.exe"   # the ONLY executable these scripts may touch: exact ExecutablePath
+# AND D:\GITHUB\_AmiW2-poza-repo\emu + our config in the command line. Never by name, window title or "winuae" match.
 Add-Type -AssemblyName System.Drawing
 Add-Type -Name P -Namespace W2S -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint f);
@@ -14,8 +14,8 @@ public delegate bool EnumProc(IntPtr h, IntPtr l);
 [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint wp);
 [DllImport("user32.dll")] public static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);
 '@
-$cfg = Join-Path "C:\temp\amiga_w2" $Config
-$procs = @(Get-CimInstance Win32_Process -Filter "Name = 'winuae-w2.exe'" | Where-Object { $_.ExecutablePath -eq $OurExe -and $_.CommandLine -like '*C:\temp\amiga_w2*' -and $_.CommandLine -like "*$cfg*" } | ForEach-Object { [uint32]$_.ProcessId })
+$cfg = Join-Path "D:\GITHUB\_AmiW2-poza-repo\emu" $Config
+$procs = @(Get-CimInstance Win32_Process -Filter "Name = 'winuae-w2.exe'" | Where-Object { $_.ExecutablePath -eq $OurExe -and $_.CommandLine -like '*D:\GITHUB\_AmiW2-poza-repo\emu*' -and $_.CommandLine -like "*$cfg*" } | ForEach-Object { [uint32]$_.ProcessId })
 if ($procs.Count -eq 0) { Write-Output "not running"; exit 1 }
 $script:hw = [IntPtr]::Zero
 $cb = [W2S.P+EnumProc]{ param($h, $l)

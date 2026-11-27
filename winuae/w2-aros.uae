@@ -1,6 +1,6 @@
 ; w2-aros.uae - AROS 68k compatibility guest (functional test only, never for timings).
 ; Full AROS m68k nightly: ROM + system as a host directory (copy of the EU2 runtime's aros-sys in
-; C:\temp\amiga_w2\aros-sys, whose S:User-Startup runs Work:run). Own Work: (work-aros) so it never shares
+; D:\GITHUB\_AmiW2-poza-repo\emu\aros-sys, whose S:User-Startup runs Work:run). Own Work: (work-aros) so it never shares
 ; Work:jobs with the reference guest; build.sh deploys w2 / w2setup / jobrun / run there too.
 config_window_title=W2 TEST AROS (agents)
 config_description=AmiW2 port - AROS m68k nightly, 68020, AGA + uaegfx, 2 MB chip, 128 MB Z3
@@ -19,10 +19,10 @@ fastmem_size=0
 z3mem_size=128
 gfxcard_type=uaegfx
 gfxcard_size=16
-kickstart_rom_file=C:\temp\amiga_w2\aros-sys\boot\amiga\aros-rom.bin
-kickstart_ext_rom_file=C:\temp\amiga_w2\aros-sys\boot\amiga\aros-ext.bin
-filesystem2=rw,DH0:AROS:C:\temp\amiga_w2\aros-sys,1
-filesystem2=rw,WORK:Work:C:\temp\amiga_w2\work-aros,-128
+kickstart_rom_file=D:\GITHUB\_AmiW2-poza-repo\emu\aros-sys\boot\amiga\aros-rom.bin
+kickstart_ext_rom_file=D:\GITHUB\_AmiW2-poza-repo\emu\aros-sys\boot\amiga\aros-ext.bin
+filesystem2=rw,DH0:AROS:D:\GITHUB\_AmiW2-poza-repo\emu\aros-sys,1
+filesystem2=rw,WORK:Work:D:\GITHUB\_AmiW2-poza-repo\emu\work-aros,-128
 gfx_width_windowed=820
 gfx_height_windowed=620
 gfx_fullscreen_amiga=false

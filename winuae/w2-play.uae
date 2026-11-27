@@ -24,9 +24,9 @@ z3mem_size=64
 gfxcard_type=uaegfx
 gfxcard_size=16
 
-kickstart_rom_file=C:\temp\amiga_w2\ROM3.1_A4000.40.70.ROM
-hardfile2=ro,DH0:C:\temp\amiga_w2\boot-play.hdf,32,1,2,512,0,,uae
-filesystem2=rw,WORK:Work:C:\temp\amiga_w2\work-play,-128
+kickstart_rom_file=D:\GITHUB\_AmiW2-poza-repo\emu\ROM3.1_A4000.40.70.ROM
+hardfile2=ro,DH0:D:\GITHUB\_AmiW2-poza-repo\emu\boot-play.hdf,32,1,2,512,0,,uae
+filesystem2=rw,WORK:Work:D:\GITHUB\_AmiW2-poza-repo\emu\work-play,-128
 
 gfx_width_windowed=820
 gfx_height_windowed=620

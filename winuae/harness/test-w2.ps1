@@ -4,7 +4,7 @@
 #   test-w2.ps1 -Tag ref_aga [-Config w2-ref020.uae] [-CfgLines "backend=aga","resolution=hires"] [-QuitMs 20000]
 param([Parameter(Mandatory)][string]$Tag, [string]$Config = "w2-ref020.uae", [string[]]$CfgLines = @("backend=aga"),
       [int]$QuitMs = 20000, [int]$TimeoutSec = 400, [string[]]$Actions = @(), [int]$ShotMs = 4000)
-$rt  = "C:\temp\amiga_w2"
+$rt  = "D:\GITHUB\_AmiW2-poza-repo\emu"
 $cfg = Join-Path $rt $Config
 $workdir = ((Get-Content $cfg -ErrorAction SilentlyContinue | Where-Object { $_ -match '^filesystem2=.*WORK:Work:' } | Select-Object -First 1) -replace '^.*WORK:Work:', '' -replace ',-?[0-9]+$', '')
 if (-not $workdir) { Write-Output "ERROR: start-w2.ps1 -Config $Config first"; exit 2 }

@@ -12,7 +12,7 @@
   Rampa gracza 4 odcienie -> rejestr (2 jasne) + połówka (2 ciemne). W sprite'ach kolor gracza jest
   zapisany jako para 4/36 (rejestr fioletowego), remap zamienia ją na rejestr gracza.
 - `w2conv` buduje paczki EHB zaraz po lores (`--no-ehb` pomija); bajt w bajt jak gra. Paczki skopiowane
-  do gamedata/data i C:/temp/amiga_w2/work{,-play,-aros}/data.
+  do gamedata/data i D:/GITHUB/_AmiW2-poza-repo/emu/work{,-play,-aros}/data.
 - Host emuluje EHB jak chipset (`native/host_gfx.c`): 12 bitów, połówki, licznik błędów
   (`EHB check: ... (clean)`): piksel >= 64 albo zapis rejestru >= 32 = błąd. Skrypty i zrzuty:
   `D:\GITHUB\_AmiW2-poza-repo\scratch\ehb\` (`final.sh`, `cmp_*.png` = AGA lores | EHB).
@@ -29,7 +29,7 @@
 
 Runda 1 ZROBIONA: formaty (`docs/DATA_FORMAT.md`, `ENTRY_MAP.md`, `src/war.c`, `src/w2gfx_decode.c`),
 tabele (`src/w2_tables.*`, `docs/SPEC_RULES.md`, generator `tools/gen_tables/`), platforma (`native/`,
-`build/build.sh`, `w2setup`, WinUAE `C:\temp\amiga_w2` — AmigaOS AGA/EHB/RTG + AROS bootują),
+`build/build.sh`, `w2setup`, WinUAE `D:\GITHUB\_AmiW2-poza-repo\emu` — AmigaOS AGA/EHB/RTG + AROS bootują),
 host harness (`build/build-host.sh`), metody AmiSC (`docs/AMISC_METHODS.md`, `src/font35.*`, `src/smk.*`).
 Dekompilacja Mac 68k (agent, `docs/RE_NOTES.md`) — w toku.
 
@@ -45,7 +45,7 @@ INTEGRACJA (2026-11-12 noc) - pierwsza grywalna wersja:
   = AI gra też slot lokalny): 30 min gry, fale ataków od ~c17000, 4 z 6 graczy pokonanych, bez ASan.
 - Amiga: build/build.sh OK (w2 285 KB), WinUAE w2-ref020 RTG: autostart 220 działa, panel UI, mgła,
   budowa; ~9-13 fps na emulowanym 020 (do optymalizacji: dirty rects, frameskip logiki).
-- dane gracza do testów: C:/temp/amiga_w2/work/data (kopia lokalna, nie repo), cfg data_dir=PROGDIR:data.
+- dane gracza do testów: D:/GITHUB/_AmiW2-poza-repo/emu/work/data (kopia lokalna, nie repo), cfg data_dir=PROGDIR:data.
 - poprawione przy integracji: OR w tabeli zależności, klasyfikacja drzewo/skała po numerze kafla
   (obie grupy mają flagę 0x81), złoto kopalni 0 -> 100000, AI ulepsza właściwy ratusz.
 - lores: agent skończył (lores.c, assets.c; paczki lores-<era>.pack w data_dir, ~2 min budowy na 030 przy pierwszym starcie - brak paska postępu na ekranie).
@@ -70,7 +70,7 @@ Do zrobienia przy integracji (zebrane z raportów):
 - ai: tabela zależności OR - ZROBIONE (gen.py czyta varargs "or", w2_tables.c ma alt 0/1); cmd_harvest(target=-1) = drzewo; W2Player.upgrades 32 bity na 52 upgrade'y (AI używa <32) - do poszerzenia.
 - tryb gry: takt z oryginału (main_amiga.c w2_tick_ms), RNG z oryginału (rng.c), wzór obrażeń w RE_NOTES.
 
-EMULATORY: tylko `C:\temp\amiga_w2\uae\winuae-w2.exe`; nigdy nie zamykać innych (użytkownik!).
+EMULATORY: tylko `D:\GITHUB\_AmiW2-poza-repo\emu\uae\winuae-w2.exe`; nigdy nie zamykać innych (użytkownik!).
 
 ## WYDANIE 0.2.0 (2026-11-13)
 - tag v0.2.0, paczki w `_AmiW2-poza-repo\dist\release-0.2.0`. Nowe: strona Options w menu gry (ui.c, g_menu==2,

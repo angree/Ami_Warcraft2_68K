@@ -3,7 +3,7 @@
 # The script is written as next.tmp and renamed to next (jobrun only ever sees a complete file).
 # LF line endings only - AmigaDOS does not run CRLF scripts. -NoWait queues it and prints the job number.
 param([Parameter(Mandatory)][string]$Script, [string]$Config = "w2-ref020.uae", [int]$TimeoutSec = 300, [switch]$NoWait)
-$cfg = Join-Path "C:\temp\amiga_w2" $Config
+$cfg = Join-Path "D:\GITHUB\_AmiW2-poza-repo\emu" $Config
 $workdir = ((Get-Content $cfg -ErrorAction SilentlyContinue | Where-Object { $_ -match '^filesystem2=.*WORK:Work:' } | Select-Object -First 1) -replace '^.*WORK:Work:', '' -replace ',-?[0-9]+$', '')
 if (-not $workdir) { Write-Output "ERROR: $cfg missing (start-w2.ps1 -Config $Config first)"; exit 2 }
 $jobs = Join-Path $workdir "jobs"

@@ -2,7 +2,7 @@
 ; 68020, no FPU, JIT off, CPU max speed throttled -70 % (cpu_throttle is in tenths of a percent).
 ; Every speed number is quoted for THIS config. AGA chipset + a uaegfx RTG board, so the same boot tests
 ; both backends (Work:w2.cfg backend=aga|rtg|ehb). 2 MB Chip + 64 MB Fast (Z3).
-; Runtime on the SSD: C:\temp\amiga_w2 (copied from the EU2 runtime). boot.hdf mounted READ-ONLY; its
+; Runtime on the SSD: D:\GITHUB\_AmiW2-poza-repo\emu (copied from the EU2 runtime). boot.hdf mounted READ-ONLY; its
 ; User-Startup runs Work:run (LF endings), which build.sh writes: Stack 2000000 + Work:jobrun (job queue).
 ; Start/stop ONLY with winuae\harness\start-w2.ps1 / stop-w2.ps1 (never kill WinUAE by name).
 config_window_title=W2 TEST ref020 noJIT -80% (agents)
@@ -26,9 +26,9 @@ z3mem_size=64
 gfxcard_type=uaegfx
 gfxcard_size=16
 
-kickstart_rom_file=C:\temp\amiga_w2\ROM3.1_A4000.40.70.ROM
-hardfile2=ro,DH0:C:\temp\amiga_w2\boot.hdf,32,1,2,512,0,,uae
-filesystem2=rw,WORK:Work:C:\temp\amiga_w2\work,-128
+kickstart_rom_file=D:\GITHUB\_AmiW2-poza-repo\emu\ROM3.1_A4000.40.70.ROM
+hardfile2=ro,DH0:D:\GITHUB\_AmiW2-poza-repo\emu\boot.hdf,32,1,2,512,0,,uae
+filesystem2=rw,WORK:Work:D:\GITHUB\_AmiW2-poza-repo\emu\work,-128
 
 gfx_width_windowed=820
 gfx_height_windowed=620

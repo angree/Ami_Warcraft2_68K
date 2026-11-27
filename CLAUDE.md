@@ -36,7 +36,7 @@ Amiga code: bebbo gcc 6.5.0b in WSL, `-mcpu=68020 -msoft-float`, never `-m68040`
 never strip, never `sprintf`, no floats, `-fbbb` without `i`/`e`, `Stack 2000000`, `PROGDIR:` only,
 Amiga headers only in `native/*.c`, own log with fflush, check libm881 in the link trace.
 Emulator safety: `90-testowanie-emulatory.md` (never kill by name, never `-Force`, never host input,
-never touch other projects' instances; runtime of this project only in `C:\temp\amiga_w2`).
+never touch other projects' instances; runtime of this project only in `D:\GITHUB\_AmiW2-poza-repo\emu`).
 WSL commands go into script FILES (no heredoc code generation through Git Bash).
 
 ## Layout
@@ -47,7 +47,7 @@ src/      the game (one module per file; shared contract in src/w2.h)
 build/    build.sh (Amiga), build-host.sh (host, ASan), w.sh
 tools/    our own tools (w2data.py reader, extractors, re/ scripts)
 docs/     DATA_FORMAT, ENTRY_MAP, SPEC_RULES, RE_NOTES, AMISC_METHODS, BUILD, HOST_TEST
-winuae/   configs + harness (runtime in C:\temp\amiga_w2)
+winuae/   configs + harness (runtime in D:\GITHUB\_AmiW2-poza-repo\emu)
 ```
 
 ## Team rules (parallel agents)

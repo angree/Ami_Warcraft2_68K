@@ -1,19 +1,19 @@
 # Start OUR WinUAE guest for the AmiW2 port ONCE and leave it running; tests go in through job-w2.ps1.
 #   powershell -ExecutionPolicy Bypass -File winuae\harness\start-w2.ps1 [-Config w2-ref020.uae|w2-aros.uae|w2-play.uae]
 # Rules (!instrukcje 90-testowanie-emulatory.md): one instance per config, found by the FULL path of its
-# config (C:\temp\amiga_w2\<cfg>) on the command line - never by process name; started DETACHED via WMI so
+# config (D:\GITHUB\_AmiW2-poza-repo\emu\<cfg>) on the command line - never by process name; started DETACHED via WMI so
 # an interrupted agent shell cannot take it down; the window is shown WITHOUT activation (a minimised
-# WinUAE pauses / renders black); never synthesises host input; touches nothing outside C:\temp\amiga_w2.
+# WinUAE pauses / renders black); never synthesises host input; touches nothing outside D:\GITHUB\_AmiW2-poza-repo\emu.
 param([string]$Config = "w2-ref020.uae", [int]$TimeoutSec = 240)
-$OurExe = "C:\temp\amiga_w2\uae\winuae-w2.exe"   # the ONLY executable these scripts may touch: exact ExecutablePath
-# AND C:\temp\amiga_w2 + our config in the command line. Never by name, window title or "winuae" match.
-$rt   = "C:\temp\amiga_w2"
+$OurExe = "D:\GITHUB\_AmiW2-poza-repo\emu\uae\winuae-w2.exe"   # the ONLY executable these scripts may touch: exact ExecutablePath
+# AND D:\GITHUB\_AmiW2-poza-repo\emu + our config in the command line. Never by name, window title or "winuae" match.
+$rt   = "D:\GITHUB\_AmiW2-poza-repo\emu"
 $exe  = Join-Path $rt "uae\winuae-w2.exe"
 $src  = Join-Path (Split-Path -Parent $PSScriptRoot) $Config
 $cfg  = Join-Path $rt $Config
 if (-not (Test-Path $exe)) { Write-Output "ERROR: $exe missing"; exit 4 }
 if (-not (Test-Path $src)) { Write-Output "ERROR: $src missing"; exit 4 }
-$mine = @(Get-CimInstance Win32_Process -Filter "Name = 'winuae-w2.exe'" | Where-Object { $_.ExecutablePath -eq $OurExe -and $_.CommandLine -like '*C:\temp\amiga_w2*' -and $_.CommandLine -like "*$cfg*" })
+$mine = @(Get-CimInstance Win32_Process -Filter "Name = 'winuae-w2.exe'" | Where-Object { $_.ExecutablePath -eq $OurExe -and $_.CommandLine -like '*D:\GITHUB\_AmiW2-poza-repo\emu*' -and $_.CommandLine -like "*$cfg*" })
 if ($mine.Count -gt 0) { Write-Output ("ALREADY RUNNING: pid {0} - use job-w2.ps1" -f $mine[0].ProcessId); exit 3 }
 Copy-Item $src $cfg -Force
 
@@ -46,7 +46,7 @@ while ((Get-Date) -lt $deadline) {
   Start-Sleep -Milliseconds 700
   [W2H.W]::ClipCursor([IntPtr]::Zero) | Out-Null          # never let the guest keep the host's mouse
   if (-not $script:shown) {
-    $procs = @(Get-CimInstance Win32_Process -Filter "Name = 'winuae-w2.exe'" | Where-Object { $_.ExecutablePath -eq $OurExe -and $_.CommandLine -like '*C:\temp\amiga_w2*' -and $_.CommandLine -like "*$cfg*" } | ForEach-Object { [uint32]$_.ProcessId })
+    $procs = @(Get-CimInstance Win32_Process -Filter "Name = 'winuae-w2.exe'" | Where-Object { $_.ExecutablePath -eq $OurExe -and $_.CommandLine -like '*D:\GITHUB\_AmiW2-poza-repo\emu*' -and $_.CommandLine -like "*$cfg*" } | ForEach-Object { [uint32]$_.ProcessId })
     $cb = [W2H.W+EnumProc]{ param($h, $l)
       [uint32]$wp = 0; [W2H.W]::GetWindowThreadProcessId($h, [ref]$wp) | Out-Null
       if ($procs -contains $wp) { $cn = New-Object System.Text.StringBuilder 64; [W2H.W]::GetClassName($h, $cn, 64) | Out-Null
