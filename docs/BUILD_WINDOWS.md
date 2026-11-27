@@ -91,7 +91,51 @@ together with the game's objects and run in the guest. Example (the oil platform
 - print with `printf` + `fflush(stdout)`; the job queue returns the output;
 - data path `PROGDIR:data`.
 
-## 5. What still needs Linux/WSL
+## 5. Native MorphOS PPC binary (`w2_MorphOS`) - GitHub Actions, no WSL
+
+No `ppc-morphos-gcc` runs natively on Windows (the MorphOS cross toolchain, metaneutrons/morphos-cross with
+GCC 15 and MorphOS SDK 3.20, is published for Linux and macOS only - see the research report
+`D:\GITHUB\_AmiW2-poza-repo\reports\Kompilacja PPC bez WSL.md`). The PPC binary is therefore built on a GitHub
+Linux runner; nothing is installed on this PC except `gh`.
+
+- Workflow: `.github/workflows/morphos.yml` (runs on every push that touches `src/`, `native/`, the build script
+  or the workflow, and by hand: `gh workflow run "MorphOS PPC build" -R angree/Ami_Warcraft2_68K`). It installs
+  morphos-cross (cached), runs `build/build-morphos.sh` and uploads `w2_MorphOS` as the artifact `w2-morphos-ppc`.
+  The MorphOS SDK is downloaded by the installer during the build and never stored in the repository.
+- Watch and fetch the binary:
+  ```
+  gh run list -R angree/Ami_Warcraft2_68K --limit 3
+  gh run watch <id> -R angree/Ami_Warcraft2_68K --exit-status
+  gh run download <id> -R angree/Ami_Warcraft2_68K -n w2-morphos-ppc -D D:\GITHUB\_AmiW2-poza-repo\mos
+  ```
+- Flags (from the instructions `45-MorphOS-natywny-PPC-2D.md`): `-O2 -fno-strict-aliasing -fwrapv -fsigned-char
+  -noixemul`. `-fsigned-char` is mandatory (char is unsigned on PPC, the simulation depends on signed char).
+- MorphOS-only code: `native/mos_c2p_stubs.c` (the 68k c2p is never called on MorphOS, which always uses RTG) and
+  the `#ifdef __MORPHOS__` parts of `amiga_stack.c` (crt0 `__stack`, no StackSwap), `amiga_trap.c` (no 68k
+  trap frames), `amiga_uclock.c` (`TimerBase` is a `struct Library`), `amiga_gfx.c` (CGX header from the SDK).
+- The same script works on any Linux machine with morphos-cross on PATH: `sh build/build-morphos.sh`.
+
+### Testing the PPC binary: own MorphOS QEMU lab `E:\morphos_w2`
+
+A private copy of the shared MorphOS lab (`E:\morphos_emu`, used by other projects): QEMU 11.1 copied to
+`E:\morphos_w2\qemu` with the executable renamed `qemu-w2-ppc.exe`, monitor on port **4557**, own exchange folder.
+MorphOS 3.20 and its boot image are read (read-only) from `E:\morphos_emu`. Never stop QEMU by name; the test
+script stops only its own instance (its pid file and port).
+
+```
+copy D:\GITHUB\_AmiW2-poza-repo\mos\w2_MorphOS E:\morphos_w2þr\w2\w2_MorphOS
+powershell -ExecutionPolicy Bypass -File E:\morphos_w2\w2-test.ps1 -MaxMin 15
+```
+
+- `E:\morphos_w2þr\w2\` holds the binary, the game data (`data\`, without music) and the test's `w2.cfg` /
+  `autoinput.txt` (RTG 640x480, computer vs computer, `profile=1`, quits after 90 s).
+- The guest script `xfer\w2test` copies everything to `RAM:` and runs the game there (a game writing its log on
+  the QEMU FAT disk can kill QEMU), then copies `w2.log` back as `xfer\w2-mos.log`.
+- Screenshots: `E:\morphos_w2\shots\`.
+- Result 2026-11-27 (0.6.2): runs to the end, RTG 640x480, 110-140 fps in QEMU, logic 7 ms/s, clean exit.
+- Unregistered MorphOS slows down after 30 minutes: keep runs short (the script boots a fresh MorphOS each time).
+
+## 6. What still needs Linux/WSL
 
 | Item | Why |
 |---|---|
@@ -99,11 +143,12 @@ together with the game's objects and run in the guest. Example (the oil platform
 | The PC converter `w2conv` (`build/build-w2conv.sh`) | Linux and MinGW cross build |
 | The full `build/release.sh` | uses the two above |
 
-## 6. If the emulator folder is missing
+## 7. If the emulator folder is missing
 
 `diskguard` moves folders from `C:\temp` to the NAS (`I:\temp_from_c\auto\...`) when drive C: runs
 low. If `C:\temp\amiga_w2\uae\winuae-w2.exe` is missing, look in `I:\temp_from_c\auto\amiga_w2` and
-copy it back (a directory junction to the NAS does not work, I: is a network drive):
+copy it back (a directory junction to the NAS does not work, I: is a network drive). It happened on
+2026-11-23 and again on 2026-11-25 (drive C: at 5-9 GB free); add `amiga_w2` to diskguard's exceptions:
 
 ```
 robocopy I:\temp_from_c\auto\amiga_w2 C:\temp\amiga_w2 /E /COPY:DAT /R:1 /W:1
