@@ -161,7 +161,11 @@ powershell -ExecutionPolicy Bypass -File E:\morphos_w2\w2-test.ps1 -MaxMin 15
 
 ## 7. Where the emulator lives
 
-The WinUAE runtime is in `D:\GITHUB\_AmiW2-poza-repo\emu` (local disk, outside the repository). It used to be in`n`C:\temp\amiga_w2`, but `C:\temp` is disposable: the disk cleanup tool `diskguard` moved it to the NAS`n(`I:\temp_from_c\auto\amiga_w2`) twice when drive C: ran low (2026-11-23, 2026-11-25). Never keep anything that`nmust last under `C:\temp`. If the runtime is ever missing, the NAS copy can be copied back:
+The WinUAE runtime is in `D:\GITHUB\_AmiW2-poza-repo\emu` (local disk, outside the repository). It used to be in
+`C:	empmiga_w2`, but `C:	emp` is disposable: the disk cleanup tool `diskguard` moved it to the NAS
+(`I:	emp_from_cutomiga_w2`) twice when drive C: ran low (2026-11-23, 2026-11-25). Never keep anything that
+must last under `C:	emp`. If the runtime is ever missing, the NAS copy can be copied back:
 
-```n robocopy I:\temp_from_c\auto\amiga_w2 D:\GITHUB\_AmiW2-poza-repo\emu /E /COPY:DAT /R:1 /W:1
-```n
+```
+robocopy I:	emp_from_cutomiga_w2 D:\GITHUB\_AmiW2-poza-repo\emu /E /COPY:DAT /R:1 /W:1
+```
