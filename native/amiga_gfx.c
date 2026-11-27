@@ -56,6 +56,9 @@
  * repaired one: the 1995 FD2Inline original lists d0 both as the "=r" output
  * and in the clobber list and declares "register _res" with no type at all,
  * which GCC 6.5 either rejects or miscompiles. */
+#ifdef __MORPHOS__
+#include <cybergraphx/cybergraphics.h>   /* tags and pixel formats live here in the MorphOS SDK */
+#endif
 #include <proto/cybergraphics.h>
 
 #include "cellcmp.h"

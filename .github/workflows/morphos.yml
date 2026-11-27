@@ -1,0 +1,35 @@
+# Native MorphOS PPC build of w2 on a GitHub Linux runner - no WSL needed on the developer's PC.
+# The MorphOS SDK is downloaded by the toolchain installer at build time (never stored in the repo);
+# the artifact holds only our own binary.
+name: MorphOS PPC build
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['src/**', 'native/**', 'build/build-morphos.sh', '.github/workflows/morphos.yml']
+jobs:
+  morphos:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache toolchain
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.morphos-cross
+          key: morphos-cross-v20260529-r4
+      - name: Install morphos-cross (GCC 15, MorphOS SDK 3.20)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools
+          curl -fsSL https://github.com/metaneutrons/morphos-cross/releases/latest/download/install.sh | sh
+      - name: Build w2 for MorphOS PPC
+        run: |
+          export PATH="$HOME/.morphos-cross/current/bin:$PATH"
+          sh build/build-morphos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: w2-morphos-ppc
+          path: build/mos/w2_MorphOS
+          retention-days: 30

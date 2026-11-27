@@ -19,6 +19,12 @@
    miejsce awarii - typowy objaw przepelnienia stosu (wieksze ramki na -O0).
    Kod ReMoM pochodzi z PC, gdzie stos ma 1-8 MB i strone ochronna; na Amidze
    przepelniony stos po cichu niszczy pamiec pod soba. */
+#ifdef __MORPHOS__
+/* native MorphOS PPC: libnix's crt0 honours __stack itself (also from an icon); no StackSwap */
+unsigned long __stack = 2000000UL;
+int w2_main(void);
+int main(void) { return w2_main(); }
+#else
 unsigned long __stack = 8UL * 1024UL * 1024UL;
 
 /* 2026-11-11, AmiEU2: __stack above is NOT honoured by this libnix (a run without "Stack 2000000" stopped in
@@ -50,3 +56,4 @@ int main(void)
 	FreeVec(g_stk);
 	return g_rc;
 }
+#endif /* !__MORPHOS__ */

@@ -17,7 +17,11 @@
 
 #include "amiga_uclock.h"
 
+#ifdef __MORPHOS__
+struct Library *TimerBase = NULL;
+#else
 struct Device *TimerBase = NULL;
+#endif
 
 static struct timerequest s_tr;
 static int   s_state = 0;          /* 0 untried, 1 open, -1 failed */
@@ -33,7 +37,7 @@ static int uclock_open(void)
 		s_state = -1;
 		return 0;
 	}
-	TimerBase = s_tr.tr_node.io_Device;
+	TimerBase = (void *)s_tr.tr_node.io_Device;
 	s_freq = ReadEClock(&ev);
 	if (s_freq == 0) s_freq = 709379UL;
 	s_last_lo = ev.ev_lo;

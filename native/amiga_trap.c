@@ -52,6 +52,13 @@ static int     s_armed = 0;
 
 void amiga_trap_land(void);
 
+#ifdef __MORPHOS__
+/* native MorphOS PPC: no 68k exception frames to rewrite - the system's own crash requester stays */
+void amiga_trap_install(void) { (void)s_old_trapcode; (void)s_task; s_armed = 1; }
+void amiga_trap_disarm(void) { s_armed = 0; }
+void amiga_trap_describe(char *buf, int len) { if (buf && len > 0) snprintf(buf, (size_t)len, "(no CPU trap handler on MorphOS PPC)"); }
+#else
+
 /*
  * Supervisor-mode entry. Motorola syntax so it reads like the CPU manuals;
  * gas accepts it. Register-neutral except for the frame surgery.
@@ -229,3 +236,4 @@ void amiga_trap_describe(char *buf, int len)
 		}
 	}
 }
+#endif /* !__MORPHOS__ */
