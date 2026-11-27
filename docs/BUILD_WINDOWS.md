@@ -1,7 +1,19 @@
 # Building Warcraft II 68K on Windows without WSL
 
 Everything needed for the Amiga binaries, the release packages and the tests in the emulator runs
-natively on Windows. This is the way version 0.6.2 was built, while WSL was unavailable.
+natively on Windows; the native MorphOS PPC binary is built by GitHub Actions. Versions 0.6.2 and 0.6.3
+were built this way, while WSL was unavailable.
+
+Short version of a full release:
+
+```
+powershell -ExecutionPolicy Bypass -File D:\GITHUB\Ami_Warcraft2\build\build-win.ps1
+git push                                   (GitHub Actions builds w2_MorphOS - section 5)
+gh run download <id> -R angree/Ami_Warcraft2_68K -n w2-morphos-ppc -D D:\GITHUB\_AmiW2-poza-repo\mos
+py -I D:\GITHUB\Ami_Warcraft2\tools\icons\make_mos_icon.py D:\GITHUB\_AmiW2-poza-repo\wbuild\icons\w2.png D:\GITHUB\_AmiW2-poza-repo\mos\w2_MorphOS.info
+powershell -ExecutionPolicy Bypass -File D:\GITHUB\Ami_Warcraft2\build\release-win.ps1 -MorphOS D:\GITHUB\_AmiW2-poza-repo\mos -ConverterFrom <previous ...-converter.zip>
+gh release create v<version> ...           (section 3)
+```
 
 ## 1. What is needed
 
@@ -34,12 +46,16 @@ powershell -ExecutionPolicy Bypass -File D:\GITHUB\Ami_Warcraft2\build\build-win
 ## 3. Release packages
 
 ```
-powershell -ExecutionPolicy Bypass -File D:\GITHUB\Ami_Warcraft2\build\release-win.ps1 -ConverterFrom D:\GITHUB\_AmiW2-poza-repo\dist\release-0.6.2\Warcraft2_68K-0.6.2-converter.zip
+powershell -ExecutionPolicy Bypass -File D:\GITHUB\Ami_Warcraft2\build\release-win.ps1 -MorphOS D:\GITHUB\_AmiW2-poza-repo\mos -ConverterFrom D:\GITHUB\_AmiW2-poza-repo\dist\release-0.6.3\Warcraft2_68K-0.6.3-converter.zip
 ```
 
 - Takes the version from `src\version.h` and writes `D:\GITHUB\_AmiW2-poza-repo\dist\release-<version>\`:
-  `Warcraft2_68K-<version>.lha` (the Amiga drawer: `w2`, `w2setup`, icons, README, LICENSE, drawer icon)
-  and `Warcraft2_68K-<version>-converter.zip`.
+  `Warcraft2_68K-<version>.lha` (the Amiga drawer: `w2`, `w2setup`, `w2_MorphOS`, icons, README, LICENSE,
+  drawer icon) and `Warcraft2_68K-<version>-converter.zip`.
+- `-MorphOS <folder>` adds `w2_MorphOS` and `w2_MorphOS.info` from that folder (the GitHub Actions build of the
+  SAME version, section 5, and its icon made with `tools\icons\make_mos_icon.py`: our own `w2.png` as a 64x64
+  PNG, which Ambient shows as an icon). The script checks that it is an ELF file carrying the version.
+  Without `-MorphOS` the release has only the 68k binaries.
 - Checks that `w2` carries the name and the version, runs the **release gate** (nothing original from
   Blizzard and nothing derived from it may be inside) and unpacks the LHA again to compare every file.
 - **The PC converter** (`w2conv.exe`, `w2conv-linux`) is not built here (that build needs Linux/WSL):
@@ -123,11 +139,11 @@ MorphOS 3.20 and its boot image are read (read-only) from `E:\morphos_emu`. Neve
 script stops only its own instance (its pid file and port).
 
 ```
-copy D:\GITHUB\_AmiW2-poza-repo\mos\w2_MorphOS E:\morphos_w2þr\w2\w2_MorphOS
+copy D:\GITHUB\_AmiW2-poza-repo\mos\w2_MorphOS E:\morphos_w2\xfer\w2\w2_MorphOS
 powershell -ExecutionPolicy Bypass -File E:\morphos_w2\w2-test.ps1 -MaxMin 15
 ```
 
-- `E:\morphos_w2þr\w2\` holds the binary, the game data (`data\`, without music) and the test's `w2.cfg` /
+- `E:\morphos_w2\xfer\w2\` holds the binary, the game data (`data\`, without music) and the test's `w2.cfg` /
   `autoinput.txt` (RTG 640x480, computer vs computer, `profile=1`, quits after 90 s).
 - The guest script `xfer\w2test` copies everything to `RAM:` and runs the game there (a game writing its log on
   the QEMU FAT disk can kill QEMU), then copies `w2.log` back as `xfer\w2-mos.log`.
@@ -143,13 +159,9 @@ powershell -ExecutionPolicy Bypass -File E:\morphos_w2\w2-test.ps1 -MaxMin 15
 | The PC converter `w2conv` (`build/build-w2conv.sh`) | Linux and MinGW cross build |
 | The full `build/release.sh` | uses the two above |
 
-## 7. If the emulator folder is missing
+## 7. Where the emulator lives
 
-`diskguard` moves folders from `C:\temp` to the NAS (`I:\temp_from_c\auto\...`) when drive C: runs
-low. If `D:\GITHUB\_AmiW2-poza-repo\emu\uae\winuae-w2.exe` is missing, look in `I:\temp_from_c\auto\amiga_w2` and
-copy it back (a directory junction to the NAS does not work, I: is a network drive). It happened on
-2026-11-23 and again on 2026-11-25 (drive C: at 5-9 GB free); add `amiga_w2` to diskguard's exceptions:
+The WinUAE runtime is in `D:\GITHUB\_AmiW2-poza-repo\emu` (local disk, outside the repository). It used to be in`n`C:\temp\amiga_w2`, but `C:\temp` is disposable: the disk cleanup tool `diskguard` moved it to the NAS`n(`I:\temp_from_c\auto\amiga_w2`) twice when drive C: ran low (2026-11-23, 2026-11-25). Never keep anything that`nmust last under `C:\temp`. If the runtime is ever missing, the NAS copy can be copied back:
 
-```
-robocopy I:\temp_from_c\auto\amiga_w2 D:\GITHUB\_AmiW2-poza-repo\emu /E /COPY:DAT /R:1 /W:1
-```
+```n robocopy I:\temp_from_c\auto\amiga_w2 D:\GITHUB\_AmiW2-poza-repo\emu /E /COPY:DAT /R:1 /W:1
+```n
