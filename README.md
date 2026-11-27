@@ -1,13 +1,13 @@
 # Warcraft II 68K
 
 A native port of Blizzard's **Warcraft II: Tides of Darkness** (1995) for classic 68k Amigas, AROS 68k
-and MorphOS — one 68k binary for all of them.
+and MorphOS — one 68k binary for all of them, plus a native PowerPC binary for MorphOS.
 
 The engine is our own code in plain C, written from scratch for the Amiga (chunky-to-planar, Paula,
 no FPU needed). **No game data is included and none is needed from us: the game runs on the files of
 your own Warcraft II CD**, which you convert once on a PC with the extractor below.
 
-This is version 0.6.2: the human and orc campaigns of Tides of Darkness and custom games (skirmish)
+This is version 0.6.3: the human and orc campaigns of Tides of Darkness and custom games (skirmish)
 against computer opponents on the maps of the CD. See "What works" below. Data converted for 0.1.0 works unchanged.
 
 ## 1. Extract the data from your own CD (on a PC)
@@ -48,7 +48,8 @@ Details: [docs/CONVERTER.md](docs/CONVERTER.md).
 3. Start **w2setup** once: display (AGA, RTG graphics card, ECS Extra-Half-Brite, Workbench window),
    resolution (640x480 or 320x240), sound (Paula, AHI, off), music, volumes, game speed. "Amiga bar"
    keeps the screen's title bar and depth gadget so you can switch to other programs.
-4. Start **w2**.
+4. Start **w2**. On MorphOS start **w2_MorphOS** instead: the same game as a native PowerPC program
+   (much faster than the 68k binary under emulation; it uses the same `data` folder and the same settings).
 
 Both programs have Workbench icons and take care of their 2 MB stack themselves.
 
@@ -57,7 +58,7 @@ Requirements: 68020 or better (68040 / fast 68030 recommended), AGA, an RTG card
 Developed and tested with 2 MB chip + 64 MB fast RAM; the real minimum has not been measured yet.
 Your own maps (`.pud`) go into a drawer `maps` next to the program.
 
-## 3. What works in 0.6.2
+## 3. What works in 0.6.3
 
 - Both campaigns of Tides of Darkness (14 human and 14 orc missions) with the act screens, the
   briefings (text, voice, picture) and the movies of your CD, each mission's objectives as in the
@@ -77,6 +78,9 @@ Your own maps (`.pud`) go into a drawer `maps` next to the program.
 - "Amiga bar": the game keeps its full area under the screen's title bar (on RTG a slightly taller
   mode of the same width is used, e.g. 320x256; without one the bar is left out). "Show FPS" puts
   the frame rate into the bar when it is shown.
+
+New in 0.6.3: a native MorphOS PowerPC binary, `w2_MorphOS`, in the drawer next to `w2` (tested on
+MorphOS 3.20 in QEMU: RTG 640x480, computer vs computer at 110-140 frames per second).
 
 New in 0.6.2: ships attack and destroy enemy oil platforms, as in the original (they could not
 target them before, which blocked the sea missions); a destroyed platform gives its oil patch back with
@@ -116,7 +120,7 @@ once explored ("Gold Left"); 320x240 on RTG with the Amiga bar no longer cuts of
 game; the frame counter goes into the title bar.
 
 - Not yet: saving games, multiplayer, the Beyond the Dark Portal expansion.
-  MorphOS is supported by design but has not been tested yet. Big battles and long scrolling still cost
+  On MorphOS the native binary was tested in QEMU, not yet on real hardware. Big battles and long scrolling still cost
   more than a quiet screen.
 
 ## 4. Building
